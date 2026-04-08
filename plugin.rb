@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: GEO prioritization if the user has not set it already + session IP exposure
-# version: 0.2.3
-# authors: Renovation.Reviews
+# version: 0.2.4
+# authors: build23w
 
 enabled_site_setting :rr_geo_enabled
 
@@ -22,12 +22,28 @@ after_initialize do
       def self.quote_patterns(patterns)
         patterns.map { |p| ActiveRecord::Base.connection.quote(p) }.join(",")
       end
+
+      def self.mask_ip(ip)
+        return nil if ip.blank?
+
+        addr = IPAddr.new(ip.to_s)
+        if addr.ipv4?
+          octets = addr.to_s.split(".")
+          "#{octets[0]}.#{octets[1]}.#{octets[2]}.0"
+        else
+          parts = addr.hton.bytes.each_slice(2).map { |a, b| ((a << 8) + b).to_s(16) }
+          "#{parts[0, 4].join(":")}::"
+        end
+      rescue IPAddr::InvalidAddressError
+        nil
+      end
     end
 
     module TopicQueryExtension
       def latest_results(options = {})
         rel = super
         return rel unless SiteSetting.rr_geo_enabled
+        return rel if options[:order].present?
 
         user = @guardian&.user
         return rel unless user
@@ -55,7 +71,7 @@ after_initialize do
             END AS rr_geo_rank
           SQL
           .distinct(true)
-          .reorder(Arel.sql("rr_geo_rank ASC, topics.created_at DESC"))
+          .reorder(Arel.sql("rr_geo_rank ASC, topics.bumped_at DESC"))
       end
     end
   end
@@ -64,6 +80,7 @@ after_initialize do
 
   require_dependency "application_controller"
   require "request_store"
+  require "ipaddr"
 
   module ::RrGeo::IpTracking
     def self.prepended(base)
@@ -104,14 +121,42 @@ after_initialize do
       def include_rr_geo_tokens?
         SiteSetting.rr_geo_enabled && object.user_profile&.location.present?
       end
+
+      def include_client_ip?
+        object&.staff?
+      end
+
+      def include_ip_changed?
+        object&.staff?
+      end
     end
   end
 
   ::CurrentUserSerializer.prepend(::RrGeo::CurrentUserSerializerExt)
 
-  add_to_serializer(:current_user, :client_ip) { RequestStore.store[:rr_client_ip] }
+  add_to_serializer(:current_user, :client_ip) do
+    ::RrGeo::Util.mask_ip(RequestStore.store[:rr_client_ip])
+  end
   add_to_serializer(:current_user, :ip_changed) { !!RequestStore.store[:rr_ip_changed] }
 
-  add_to_serializer(:site, :client_ip) { RequestStore.store[:rr_client_ip] }
+  add_to_serializer(:site, :client_ip) do
+    ::RrGeo::Util.mask_ip(RequestStore.store[:rr_client_ip])
+  end
   add_to_serializer(:site, :ip_changed) { !!RequestStore.store[:rr_ip_changed] }
+
+  require_dependency "site_serializer"
+
+  module ::RrGeo
+    module SiteSerializerExt
+      def include_client_ip?
+        scope&.is_staff?
+      end
+
+      def include_ip_changed?
+        scope&.is_staff?
+      end
+    end
+  end
+
+  ::SiteSerializer.prepend(::RrGeo::SiteSerializerExt)
 end
