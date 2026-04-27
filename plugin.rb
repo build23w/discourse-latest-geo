@@ -56,6 +56,7 @@ after_initialize do
         q_array = ::RrGeo::Util.quote_patterns(patterns)
 
         rel
+          .where("topics.views >= 3")
           .joins(<<~SQL)
             LEFT JOIN topic_tags tt ON tt.topic_id = topics.id
             LEFT JOIN tags tg ON tg.id = tt.tag_id
