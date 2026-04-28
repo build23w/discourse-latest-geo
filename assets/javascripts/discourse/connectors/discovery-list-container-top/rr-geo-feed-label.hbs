@@ -1,11 +1,11 @@
-{{#if (not currentUser)}}
+{{#if (not this.currentUser)}}
   <div class="rr-geo-feed-label is-guest" role="note" aria-live="polite">
     <a href="/login">Log in</a>
     to see a local public feed.
   </div>
-{{else if currentUser.location}}
+{{else if this.currentUser.location}}
   <div class="rr-geo-feed-label" role="note" aria-live="polite">
     Personalized for
-    {{currentUser.location}}
+    {{this.currentUser.location}}
   </div>
 {{/if}}
