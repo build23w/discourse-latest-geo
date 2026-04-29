@@ -1,15 +1,193 @@
+/* discourse-latest-geo v0.3.0 -- click-to-edit feed label */
+
 .rr-geo-feed-label {
-  margin: 0 0 0.5rem 0;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: var(--font-down-1);
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 8px;
+  margin: 0 0 0.6rem 0;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: var(--font-down-1);
+  background: var(--primary-very-low);
+  border: 1px solid var(--primary-low);
+  color: var(--primary);
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .15s ease;
+  user-select: none;
+  text-align: left;
+
+  /* button reset for the .is-set / .is-unset variants which render as <button> */
+  font-family: inherit;
+  line-height: inherit;
+
+  &__icon {
+    font-size: 14px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  &__text {
+    flex: 1;
+  }
+  &__edit-hint {
+    margin-left: 6px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--primary-low);
+    color: var(--primary-medium);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .3px;
+    opacity: 0;
+    transition: opacity .15s ease;
+  }
+
+  &.is-set,
+  &.is-unset {
+    &:hover, &:focus {
+      background: var(--primary-low);
+      border-color: var(--primary-medium);
+      transform: translateY(-1px);
+      .rr-geo-feed-label__edit-hint { opacity: 1; }
+    }
+  }
 
   &.is-guest {
-    a {
-      text-decoration: underline;
+    cursor: default;
+    a { text-decoration: underline; font-weight: 700; }
+    &:hover { transform: none; background: var(--primary-very-low); }
+  }
+
+  &.is-editing {
+    cursor: default;
+    flex-direction: column;
+    align-items: stretch;
+    background: var(--secondary);
+    border-color: var(--primary-medium);
+    padding: 14px 14px 12px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
+    width: 100%;
+    max-width: 560px;
+    transform: none;
+  }
+}
+
+/* ===== inline editor ===== */
+.rr-geo-edit {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  flex-wrap: wrap;
+  margin-top: 4px;
+
+  &__input {
+    flex: 1;
+    min-width: 180px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--primary-low);
+    background: var(--secondary);
+    color: var(--primary);
+    font-size: 13.5px;
+    font-family: inherit;
+    transition: border-color .15s ease, box-shadow .15s ease;
+    &:focus {
+      outline: 0;
+      border-color: var(--tertiary);
+      box-shadow: 0 0 0 3px rgba(8, 140, 204, 0.18);
     }
+  }
+  &__save,
+  &__cancel,
+  &__clear {
+    border: 0;
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 12.5px;
+    font-weight: 700;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  &__save {
+    background: var(--tertiary);
+    color: var(--secondary);
+    &:hover:not([disabled]) { background: var(--tertiary-hover, #066ea4); }
+    &[disabled] { opacity: 0.6; cursor: not-allowed; }
+  }
+  &__cancel {
+    background: transparent;
+    color: var(--primary-medium);
+    border: 1px solid var(--primary-low);
+    &:hover { background: var(--primary-very-low); color: var(--primary); }
+  }
+  &__suggestions {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    width: 100%;
+    li { margin: 0; }
+  }
+  &__suggestion {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: var(--primary-very-low);
+    border: 1px solid var(--primary-low);
+    color: var(--primary);
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .12s ease;
+    &:hover { background: var(--tertiary-low, var(--primary-low)); border-color: var(--tertiary); color: var(--tertiary); }
+  }
+  &__recents {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    margin-top: 8px; width: 100%;
+  }
+  &__recents-label {
+    font-size: 11px; color: var(--primary-medium); text-transform: uppercase; letter-spacing: .8px; font-weight: 700;
+  }
+  &__recent-chip {
+    background: transparent;
+    border: 1px dashed var(--primary-low);
+    color: var(--primary-medium);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-family: inherit;
+    cursor: pointer;
+    &:hover { background: var(--primary-very-low); color: var(--primary); border-color: var(--primary-medium); }
+  }
+  &__error {
+    margin-top: 6px;
+    color: var(--danger);
+    font-size: 12px;
+  }
+  &__footer {
+    margin-top: 10px;
+    border-top: 1px solid var(--primary-very-low);
+    padding-top: 8px;
+    width: 100%;
+  }
+  &__clear {
+    background: transparent;
+    color: var(--danger);
+    padding: 4px 0;
+    font-size: 11.5px;
+    text-decoration: underline;
+    &:hover { color: var(--danger-hover, var(--danger)); }
+  }
+}
+
+/* Mobile -- stack the input above buttons on narrow widths */
+@media (max-width: 600px) {
+  .rr-geo-edit {
+    flex-direction: column;
+    align-items: stretch;
+    &__input { min-width: 0; }
+    &__save, &__cancel { width: 100%; }
   }
 }

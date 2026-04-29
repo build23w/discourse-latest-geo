@@ -69,26 +69,27 @@ function hardReloadIfAllowed({ enabled = true } = {}) {
   window.location.reload();
 }
 
-async function fetchSessionIp() {
+// v0.3.0: previously this hit /session/current.json then /site.json. Both 403
+// under WAF rate-limiting on home.renovation.reviews and contributed to the
+// 403 storm. The plugin already exposes client_ip via add_to_serializer
+// for staff -- read it from currentUser if available, otherwise from the
+// preloaded data island. Either path is zero-fetch.
+function fetchSessionIp(api) {
   try {
-    const r = await fetch("/session/current.json", {
-      headers: { Accept: "application/json" },
-    });
-    if (r.ok) {
-      const j = await r.json();
-      return j.client_ip || null;
-    }
-  } catch {}
-  try {
-    const r2 = await fetch("/site.json", {
-      headers: { Accept: "application/json" },
-    });
-    if (r2.ok) {
-      const s = await r2.json();
-      return s.client_ip || null;
-    }
-  } catch {}
-  return null;
+    const u = api?.getCurrentUser?.();
+    if (u && u.client_ip) return u.client_ip;
+    // Read preloaded `currentUser.client_ip` if the global isn't populated yet
+    const el = document.getElementById("data-preloaded");
+    if (!el) return null;
+    const raw = el.getAttribute("data-preloaded");
+    if (!raw) return null;
+    const outer = JSON.parse(raw);
+    let cu = outer.currentUser;
+    if (typeof cu === "string") { try { cu = JSON.parse(cu); } catch { cu = null; } }
+    return (cu && cu.client_ip) || null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchIpinfo() {
@@ -167,7 +168,7 @@ async function refreshGeoIfNeeded(api, { force = false } = {}) {
 
   setDefaultTokensIfMissing();
 
-  const sessionIp = await fetchSessionIp();
+  const sessionIp = fetchSessionIp(api);
   const lastIp = localStorage.getItem(GEO_LAST_IP_KEY) || "";
   const firstRun = !lastIp;
   const ipChanged = sessionIp && lastIp && sessionIp !== lastIp;
@@ -211,6 +212,25 @@ export default {
         }
       });
       window.addEventListener("online", () => refreshGeoIfNeeded(api));
+
+      // v0.3.0: when the user updates their location via the feed widget,
+      // re-tokenize immediately so search/feed prioritization picks up the
+      // new place without waiting for the next visibility cycle.
+      window.addEventListener("rr-geo-updated", (e) => {
+        const newLoc = (e && e.detail && e.detail.location) || "";
+        if (newLoc) {
+          const toks = tokenizePieces(newLoc);
+          if (toks.length) {
+            const csv = toks.join(",");
+            if (tokensChanged(csv)) {
+              localStorage.setItem(GEO_TOKENS_KEY, csv);
+            }
+          }
+        } else {
+          // Cleared -- reset to defaults so prioritization falls back gracefully
+          localStorage.setItem(GEO_TOKENS_KEY, "toronto,gta,ontario,canada");
+        }
+      });
 
       if (GEO_POLL_INTERVAL_MS > 0) {
         setInterval(() => refreshGeoIfNeeded(api), GEO_POLL_INTERVAL_MS);

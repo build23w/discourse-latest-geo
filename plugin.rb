@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
-# about: GEO prioritization if the user has not set it already + session IP exposure
-# version: 0.2.4
+# about: GEO-prioritized topic feed + click-to-edit location widget. Auto-detects location via ipinfo.io for new users; lets them update on the fly via the feed widget. v0.3.0+ adds inline editor, city suggestions, recent-locations history, and a server-side endpoint for in-place updates.
+# version: 0.3.0
 # authors: build23w
 
 enabled_site_setting :rr_geo_enabled
@@ -9,6 +9,13 @@ enabled_site_setting :rr_geo_enabled
 register_asset "stylesheets/common/rr-geo-feed-label.scss"
 
 after_initialize do
+  load File.expand_path('../app/controllers/rr_geo/locations_controller.rb', __FILE__)
+
+  Discourse::Application.routes.append do
+    put '/rr-geo/location.json'        => 'rr_geo/locations#update'
+    get '/rr-geo/suggestions.json'     => 'rr_geo/locations#suggestions'
+  end
+
   module ::RrGeo
     class Util
       def self.tokens_from_location(loc)

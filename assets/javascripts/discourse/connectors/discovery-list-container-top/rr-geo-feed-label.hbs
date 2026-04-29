@@ -1,11 +1,3 @@
-{{#if (not this.currentUser)}}
-  <div class="rr-geo-feed-label is-guest" role="note" aria-live="polite">
-    <a href="/login">Log in</a>
-    to see a local public feed.
-  </div>
-{{else if this.currentUser.location}}
-  <div class="rr-geo-feed-label" role="note" aria-live="polite">
-    Personalized for
-    {{this.currentUser.location}}
-  </div>
-{{/if}}
+{{!-- Superseded by rr-geo-feed-label.gjs in v0.3.0. The .gjs sibling owns
+     the template + click-to-edit behaviour. This file is intentionally empty;
+     delete it from the repo when convenient (the workspace doesn't allow it). --}}
