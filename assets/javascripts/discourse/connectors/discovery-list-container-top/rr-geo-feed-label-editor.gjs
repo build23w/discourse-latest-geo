@@ -43,9 +43,19 @@ export default class RrGeoFeedLabelEditor extends Component {
   @tracked inputValue = "";
   @tracked suggestions = [];
   @tracked errorMessage = null;
+  // _locationOverride is null when we're rendering whatever the currentUser
+  // service has, and a string after the user saves a new value. Because it's
+  // @tracked, setting it triggers an immediate re-render of the label without
+  // waiting for a route refresh or page reload. currentUser.location itself
+  // isn't @tracked on the service, so mutating it directly doesn't fire
+  // reactivity -- this override is the canonical source the template reads.
+  @tracked _locationOverride = null;
 
   get recentLocations() { return readRecents(); }
-  get currentLocation() { return this.currentUser?.location || ""; }
+  get currentLocation() {
+    if (this._locationOverride !== null) return this._locationOverride;
+    return this.currentUser?.location || "";
+  }
 
   @action
   startEditing(event) {
@@ -116,18 +126,35 @@ export default class RrGeoFeedLabelEditor extends Component {
         type: "PUT",
         data: { location: newLoc },
       });
-      if (this.currentUser) this.currentUser.location = newLoc;
+      // === IMMEDIATE LABEL REFRESH ===
+      // 1. Set the @tracked override -- this re-renders the label THIS FRAME
+      //    so the user sees the new location instantly with no flicker.
+      this._locationOverride = newLoc;
+      // 2. Best-effort: also mutate currentUser.location so other parts of
+      //    Discourse (search filters, profile pages, etc.) see the new value.
+      //    Wrapped in try/catch because the service property may be frozen on
+      //    some Discourse versions; the override above is what guarantees the
+      //    label updates regardless.
+      if (this.currentUser) {
+        try { this.currentUser.location = newLoc; } catch (_) { /* ignore */ }
+      }
       writeRecents(newLoc);
       this.editing = false;
       this.suggestions = [];
+
+      // Notify the geo initializer so it re-tokenizes localStorage tokens
+      // (used by feed prioritization on the next route load).
       try { window.dispatchEvent(new CustomEvent("rr-geo-updated", { detail: { location: newLoc } })); } catch {}
+
+      // Soft route refresh in the background -- doesn't block the label re-render.
+      // The feed re-fetches with the new location tokens; if it fails for any
+      // reason, the label is already correct and the next navigation will pick up
+      // the new prioritization naturally.
       try {
         if (this.router && typeof this.router.refresh === "function") {
-          await this.router.refresh();
-        } else {
-          window.location.reload();
+          this.router.refresh();
         }
-      } catch { window.location.reload(); }
+      } catch (_) { /* silent -- label is already updated */ }
     } catch (e) {
       this.errorMessage = "Couldn't save. Try again?";
       try { popupAjaxError(e); } catch {}
@@ -146,13 +173,13 @@ export default class RrGeoFeedLabelEditor extends Component {
   <template>
     {{#unless this.currentUser}}
       <div class="rr-geo-feed-label is-guest" role="note" aria-live="polite">
-        <span class="rr-geo-feed-label__icon">&#128205;</span>
+        <span class="rr-geo-feed-label__icon">📍</span>
         <a href="/login">Log in</a>
         to set your location and get a feed tuned to your area.
       </div>
     {{else if this.editing}}
       <div class="rr-geo-feed-label is-editing" role="dialog" aria-label="Edit your location">
-        <span class="rr-geo-feed-label__icon">&#128205;</span>
+        <span class="rr-geo-feed-label__icon">📍</span>
         <div class="rr-geo-edit">
           <input class="rr-geo-edit__input"
                  type="text"
@@ -178,7 +205,7 @@ export default class RrGeoFeedLabelEditor extends Component {
             {{#each this.suggestions as |s|}}
               <li>
                 <button class="rr-geo-edit__suggestion" type="button" {{on "click" (fn this.pickSuggestion s)}}>
-                  &#128205; {{s}}
+                  📍 {{s}}
                 </button>
               </li>
             {{/each}}
@@ -210,15 +237,15 @@ export default class RrGeoFeedLabelEditor extends Component {
       </div>
     {{else if this.currentLocation}}
       <button class="rr-geo-feed-label is-set" type="button" {{on "click" this.startEditing}} aria-label="Edit your location">
-        <span class="rr-geo-feed-label__icon">&#128205;</span>
+        <span class="rr-geo-feed-label__icon">📍</span>
         <span class="rr-geo-feed-label__text">Personalized for <strong>{{this.currentLocation}}</strong></span>
-        <span class="rr-geo-feed-label__edit-hint">Edit &#x270E;</span>
+        <span class="rr-geo-feed-label__edit-hint">Edit ✎</span>
       </button>
     {{else}}
       <button class="rr-geo-feed-label is-unset" type="button" {{on "click" this.startEditing}}>
-        <span class="rr-geo-feed-label__icon">&#128205;</span>
+        <span class="rr-geo-feed-label__icon">📍</span>
         <span class="rr-geo-feed-label__text">Add your location for a personalized feed</span>
-        <span class="rr-geo-feed-label__edit-hint">Set &rarr;</span>
+        <span class="rr-geo-feed-label__edit-hint">Set →</span>
       </button>
     {{/unless}}
   </template>
