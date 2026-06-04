@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Hybrid relevance feed (location + content-affinity recommender + engagement/votes + freshness) with a click-to-edit location widget. Auto-detects location via ipinfo.io; v0.4.0 adds the weighted multi-signal ranking on top of the original geo prioritization.
-# version: 0.5.0
+# version: 0.6.0
 # authors: build23w
 
 enabled_site_setting :rr_geo_enabled
@@ -118,6 +118,17 @@ after_initialize do
             lparts << "EXISTS (SELECT 1 FROM categories cl WHERE cl.id = topics.category_id AND lower(cl.name) IN (#{qc}))"
           end
           terms << "#{w_learned} * (CASE WHEN #{lparts.join(' OR ')} THEN 1 ELSE 0 END)" if lparts.present?
+        end
+
+        # (6) EXPLORATION — a per-(user, day) pseudo-random jitter. Breaks ties and
+        # gently ROTATES the feed each day so users keep discovering content
+        # beyond their learned bubble (the explore/exploit tradeoff). Deterministic
+        # within a day → stable across pagination; reseeds daily and per-user.
+        w_explore = (SiteSetting.rr_geo_weight_explore rescue 1).to_f
+        if w_explore > 0
+          seed = (((Date.today.yday * 2_654_435_761) + user.id.to_i) % 100_000)
+          seed = 1 if seed.zero?
+          terms << "#{w_explore} * (((topics.id * #{seed}) % 997) / 997.0)"
         end
 
         return rel if terms.empty?

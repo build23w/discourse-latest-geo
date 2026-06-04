@@ -18,6 +18,8 @@ import { withPluginApi } from "discourse/lib/plugin-api";
 //       shown but ignored   -> label 0, small learning rate (weak negative)
 //     update:  err = label - pred;  w[f] += lr * err;  b += lr * err * 0.1
 //   * Periodic L2 decay keeps weights from running away.
+//   * EXPLORATION: epsilon-greedy — sometimes surfaces low-confidence features
+//     so the model keeps learning your edges (server also adds a daily jitter).
 //
 // We DON'T reorder the DOM (that fought Ember + broke mobile). Instead the model
 // distills the user's top-liked tags/categories and syncs them to the server
@@ -31,6 +33,7 @@ const L2 = 0.0015;          // weight decay
 const CLIP = 6;             // max |weight|
 const SYNC_DEBOUNCE_MS = 4000;
 const MAX_SYNC_TERMS = 15;
+const EPSILON = 0.25;          // exploration rate: chance to also surface low-confidence features
 
 let pendingImpressions = {}; // topicId -> [features]  (shown this page, not yet clicked)
 let syncTimer = null;
@@ -121,6 +124,24 @@ function syncProfile() {
     if (f.indexOf("tag:") === 0 && tags.length < MAX_SYNC_TERMS) { tags.push(f.slice(4)); }
     else if (f.indexOf("cat:") === 0 && cats.length < MAX_SYNC_TERMS) { cats.push(f.slice(4)); }
   }
+  // ---- EXPLORATION (epsilon-greedy curiosity) ----
+  // With probability EPSILON, also surface 1-2 features the model has SEEN but
+  // is still UNSURE about (small positive weight). Boosting them server-side
+  // shows the user more of that kind of topic, so the model gets the data to
+  // decide if they actually like it. This is what stops the feed tunnel-visioning.
+  if (Math.random() < EPSILON) {
+    const curious = Object.keys(m.w)
+      .map((f) => [f, m.w[f]])
+      .filter((e) => e[1] > 0.02 && e[1] < 0.18) // seen, weakly liked, low confidence
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 2);
+    for (let i = 0; i < curious.length; i++) {
+      const f = curious[i][0];
+      if (f.indexOf("tag:") === 0 && tags.indexOf(f.slice(4)) === -1) { tags.push(f.slice(4)); }
+      else if (f.indexOf("cat:") === 0 && cats.indexOf(f.slice(4)) === -1) { cats.push(f.slice(4)); }
+    }
+  }
+
   if (!tags.length && !cats.length) { return; }
   ajax("/rr-geo/interests.json", { type: "PUT", data: { tags, categories: cats } }).catch(() => {});
 }

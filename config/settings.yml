@@ -32,3 +32,7 @@ plugins:
     default: 2
     min: 0
     max: 100
+  rr_geo_weight_explore:
+    default: 1
+    min: 0
+    max: 100
