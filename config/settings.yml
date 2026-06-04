@@ -51,3 +51,22 @@ plugins:
     default: 12
     min: 0
     max: 100
+
+  # ===== v0.8.0 LIVE- adaptation server complements =====
+  # Re-seed the explore + fresh-lottery jitter every N minutes (instead of once
+  # per day) so the feed visibly rotates on each visit. Stays constant within a
+  # single scroll session (pages load within seconds), so pagination is stable.
+  rr_geo_seed_bucket_minutes:
+    default: 25
+    min: 5
+    max: 1440
+  # Engagement VELOCITY: boost topics getting activity RIGHT NOW (recent posts),
+  # so "hot right now" bubbles up instead of old cumulative-heavy threads.
+  rr_geo_weight_velocity:
+    default: 3
+    min: 0
+    max: 100
+  rr_geo_velocity_window_hours:
+    default: 8
+    min: 1
+    max: 168

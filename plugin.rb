@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Hybrid relevance feed (location + content-affinity recommender + engagement/votes + freshness) with a click-to-edit location widget. Auto-detects location via ipinfo.io; v0.4.0 adds the weighted multi-signal ranking on top of the original geo prioritization.
-# version: 0.7.1
+# version: 0.8.0
 # authors: build23w
 
 enabled_site_setting :rr_geo_enabled
@@ -101,6 +101,20 @@ after_initialize do
         # (4) Freshness — decays over days
         terms << "#{w_fresh} * (1.0 / (1.0 + (EXTRACT(EPOCH FROM (now() - topics.bumped_at)) / 86400.0)))" if w_fresh > 0
 
+        # (4b) ENGAGEMENT VELOCITY — "hot right now". Boosts topics being posted
+        # to RECENTLY (within a window), scaled by reply volume (log-damped) and
+        # sharply decayed by hours-since-last-post. Unlike the cumulative
+        # engagement term above (which favours old established threads forever),
+        # this surfaces threads with live momentum so the feed reflects what is
+        # active this hour. Contributes 0 once a topic goes quiet.
+        w_vel = (SiteSetting.rr_geo_weight_velocity rescue 3).to_f
+        if w_vel > 0
+          vwin = (SiteSetting.rr_geo_velocity_window_hours rescue 8).to_i
+          terms << "#{w_vel} * (CASE WHEN topics.last_posted_at > (now() - INTERVAL '#{vwin} hours') " \
+                   "THEN ln(1 + GREATEST(0, COALESCE(topics.posts_count, 1) - 1)) " \
+                   "* (1.0 / (1.0 + (EXTRACT(EPOCH FROM (now() - topics.last_posted_at)) / 3600.0))) ELSE 0 END)"
+        end
+
         # (5) LEARNED affinity — the client-side online model's distilled top
         # tags/categories (synced via /rr-geo/interests.json). This is the
         # "model running with the user": it learns from clicks/upvotes on-device,
@@ -124,9 +138,15 @@ after_initialize do
         # gently ROTATES the feed each day so users keep discovering content
         # beyond their learned bubble (the explore/exploit tradeoff). Deterministic
         # within a day → stable across pagination; reseeds daily and per-user.
+        # The jitter seed now rotates on a TIME BUCKET (default 25 min) rather
+        # than once per day, so the feed visibly reshuffles on each visit while
+        # staying constant within a single scroll session (pages load within
+        # seconds -> pagination stays stable).
+        bmin   = [(SiteSetting.rr_geo_seed_bucket_minutes rescue 25).to_i, 5].max
+        bucket = (Time.now.to_i / (bmin * 60))
         w_explore = (SiteSetting.rr_geo_weight_explore rescue 1).to_f
         if w_explore > 0
-          seed = (((Date.today.yday * 2_654_435_761) + user.id.to_i) % 100_000)
+          seed = (((bucket * 2_654_435_761) + user.id.to_i) % 100_000)
           seed = 1 if seed.zero?
           terms << "#{w_explore} * (((topics.id::bigint * #{seed}) % 997) / 997.0)"
         end
@@ -141,7 +161,7 @@ after_initialize do
         if w_freshboost > 0
           fwin    = (SiteSetting.rr_geo_fresh_boost_window_hours rescue 48).to_i
           fchance = (SiteSetting.rr_geo_fresh_boost_chance rescue 12).to_i
-          fseed   = ((((Date.today.yday + 7) * 40_503) + user.id.to_i) % 100_000)
+          fseed   = ((((bucket + 7) * 40_503) + user.id.to_i) % 100_000)
           fseed   = 1 if fseed.zero?
           terms << "#{w_freshboost} * (CASE WHEN topics.created_at > (now() - INTERVAL '#{fwin} hours') " \
                    "AND (((topics.id::bigint * #{fseed}) % 100)) < #{fchance} THEN 10 ELSE 0 END)"
