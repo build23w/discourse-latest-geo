@@ -28,3 +28,7 @@ plugins:
     default: 2
     min: 0
     max: 100
+  rr_geo_weight_learned:
+    default: 2
+    min: 0
+    max: 100

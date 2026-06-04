@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Hybrid relevance feed (location + content-affinity recommender + engagement/votes + freshness) with a click-to-edit location widget. Auto-detects location via ipinfo.io; v0.4.0 adds the weighted multi-signal ranking on top of the original geo prioritization.
-# version: 0.4.0
+# version: 0.5.0
 # authors: build23w
 
 enabled_site_setting :rr_geo_enabled
@@ -14,6 +14,7 @@ after_initialize do
   Discourse::Application.routes.append do
     put '/rr-geo/location.json'        => 'rr_geo/locations#update'
     get '/rr-geo/suggestions.json'     => 'rr_geo/locations#suggestions'
+    put '/rr-geo/interests.json'       => 'rr_geo/locations#update_interests'
   end
 
   module ::RrGeo
@@ -100,6 +101,25 @@ after_initialize do
         # (4) Freshness — decays over days
         terms << "#{w_fresh} * (1.0 / (1.0 + (EXTRACT(EPOCH FROM (now() - topics.bumped_at)) / 86400.0)))" if w_fresh > 0
 
+        # (5) LEARNED affinity — the client-side online model's distilled top
+        # tags/categories (synced via /rr-geo/interests.json). This is the
+        # "model running with the user": it learns from clicks/upvotes on-device,
+        # we just boost topics matching what it learned.
+        w_learned = (SiteSetting.rr_geo_weight_learned rescue 2).to_f
+        if w_learned > 0
+          prof = ::RrGeo::TopicQueryExtension.interest_profile(user)
+          lparts = []
+          if prof[:tags].present?
+            qt = ::RrGeo::Util.quote_patterns(prof[:tags])
+            lparts << "EXISTS (SELECT 1 FROM topic_tags tt3 JOIN tags tg3 ON tg3.id = tt3.tag_id WHERE tt3.topic_id = topics.id AND lower(tg3.name) IN (#{qt}))"
+          end
+          if prof[:categories].present?
+            qc = ::RrGeo::Util.quote_patterns(prof[:categories])
+            lparts << "EXISTS (SELECT 1 FROM categories cl WHERE cl.id = topics.category_id AND lower(cl.name) IN (#{qc}))"
+          end
+          terms << "#{w_learned} * (CASE WHEN #{lparts.join(' OR ')} THEN 1 ELSE 0 END)" if lparts.present?
+        end
+
         return rel if terms.empty?
 
         rel = rel.joins("LEFT JOIN (SELECT topic_id, SUM(direction) AS vscore FROM coin_engine_post_votes GROUP BY topic_id) pv ON pv.topic_id = topics.id") if use_votes && w_eng > 0
@@ -127,6 +147,16 @@ after_initialize do
         ids.compact.map(&:to_i).uniq.first(50)
       rescue StandardError
         []
+      end
+
+      # Client-synced interest profile (learned top tag/category names).
+      def self.interest_profile(user)
+        raw = (user.custom_fields['rr_interest_profile'] rescue nil)
+        return { tags: [], categories: [] } if raw.blank?
+        h = (JSON.parse(raw) rescue {})
+        { tags: Array(h['tags']).map(&:to_s).first(25), categories: Array(h['categories']).map(&:to_s).first(25) }
+      rescue StandardError
+        { tags: [], categories: [] }
       end
     end
   end

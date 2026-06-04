@@ -3,7 +3,7 @@
 module RrGeo
   class LocationsController < ::ApplicationController
     requires_plugin 'discourse-latest-geo'
-    before_action :ensure_logged_in, only: [:update]
+    before_action :ensure_logged_in, only: [:update, :update_interests]
     skip_before_action :preload_json
     skip_before_action :check_xhr
 
@@ -30,6 +30,22 @@ module RrGeo
         tokens:    tokens,
         username:  current_user.username
       }
+    end
+
+    # PUT /rr-geo/interests.json
+    # body: { tags: ["hvac","rebates"], categories: ["renovations","roofing"] }
+    # The client-side online model distills its top-liked tag/category NAMES and
+    # syncs them here; the hybrid feed ranker boosts matching topics. Stored on a
+    # user custom field as compact JSON.
+    def update_interests
+      raise Discourse::NotFound unless SiteSetting.rr_geo_enabled
+      clean = lambda do |arr|
+        Array(arr).map { |x| x.to_s.downcase.strip[0, 40] }.reject(&:blank?).uniq.first(25)
+      end
+      profile = { 'tags' => clean.call(params[:tags]), 'categories' => clean.call(params[:categories]), 'updated_at' => Time.now.to_i }
+      current_user.custom_fields['rr_interest_profile'] = profile.to_json
+      current_user.save_custom_fields
+      render json: { ok: true, tags: profile['tags'], categories: profile['categories'] }
     end
 
     # GET /rr-geo/suggestions.json?q=tor
