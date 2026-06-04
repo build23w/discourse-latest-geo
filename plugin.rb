@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Hybrid relevance feed (location + content-affinity recommender + engagement/votes + freshness) with a click-to-edit location widget. Auto-detects location via ipinfo.io; v0.4.0 adds the weighted multi-signal ranking on top of the original geo prioritization.
-# version: 0.6.0
+# version: 0.7.0
 # authors: build23w
 
 enabled_site_setting :rr_geo_enabled
@@ -129,6 +129,22 @@ after_initialize do
           seed = (((Date.today.yday * 2_654_435_761) + user.id.to_i) % 100_000)
           seed = 1 if seed.zero?
           terms << "#{w_explore} * (((topics.id * #{seed}) % 997) / 997.0)"
+        end
+
+        # (7) FRESH-POST LOTTERY — give a RECENT topic a slight random chance to
+        # surface near the TOP of the feed, so brand-new content gets discovered
+        # instead of being buried under established hot threads. Per-(user, topic,
+        # day): stable across pagination, varies by user, reseeds daily. When the
+        # lottery hits, the boost (weight x 10) is large enough to lift the fresh
+        # post near the top; misses contribute 0 (no effect on everything else).
+        w_freshboost = (SiteSetting.rr_geo_weight_fresh_boost rescue 2).to_f
+        if w_freshboost > 0
+          fwin    = (SiteSetting.rr_geo_fresh_boost_window_hours rescue 48).to_i
+          fchance = (SiteSetting.rr_geo_fresh_boost_chance rescue 12).to_i
+          fseed   = ((((Date.today.yday + 7) * 40_503) + user.id.to_i) % 100_000)
+          fseed   = 1 if fseed.zero?
+          terms << "#{w_freshboost} * (CASE WHEN topics.created_at > (now() - INTERVAL '#{fwin} hours') " \
+                   "AND (((topics.id * #{fseed}) % 100)) < #{fchance} THEN 10 ELSE 0 END)"
         end
 
         return rel if terms.empty?

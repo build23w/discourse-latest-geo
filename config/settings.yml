@@ -36,3 +36,18 @@ plugins:
     default: 1
     min: 0
     max: 100
+
+  # ===== v0.7.0 fresh-post lottery: a RECENT topic gets a slight random chance
+  # to surface near the TOP of the feed (discovery for brand-new content). =====
+  rr_geo_weight_fresh_boost:
+    default: 2
+    min: 0
+    max: 100
+  rr_geo_fresh_boost_window_hours:
+    default: 48
+    min: 1
+    max: 336
+  rr_geo_fresh_boost_chance:
+    default: 12
+    min: 0
+    max: 100
