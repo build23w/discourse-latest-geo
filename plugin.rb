@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Hybrid relevance feed (location + content-affinity recommender + engagement/votes + freshness) with a click-to-edit location widget. Auto-detects location via ipinfo.io; v0.4.0 adds the weighted multi-signal ranking on top of the original geo prioritization.
-# version: 0.7.0
+# version: 0.7.1
 # authors: build23w
 
 enabled_site_setting :rr_geo_enabled
@@ -128,7 +128,7 @@ after_initialize do
         if w_explore > 0
           seed = (((Date.today.yday * 2_654_435_761) + user.id.to_i) % 100_000)
           seed = 1 if seed.zero?
-          terms << "#{w_explore} * (((topics.id * #{seed}) % 997) / 997.0)"
+          terms << "#{w_explore} * (((topics.id::bigint * #{seed}) % 997) / 997.0)"
         end
 
         # (7) FRESH-POST LOTTERY — give a RECENT topic a slight random chance to
@@ -144,16 +144,24 @@ after_initialize do
           fseed   = ((((Date.today.yday + 7) * 40_503) + user.id.to_i) % 100_000)
           fseed   = 1 if fseed.zero?
           terms << "#{w_freshboost} * (CASE WHEN topics.created_at > (now() - INTERVAL '#{fwin} hours') " \
-                   "AND (((topics.id * #{fseed}) % 100)) < #{fchance} THEN 10 ELSE 0 END)"
+                   "AND (((topics.id::bigint * #{fseed}) % 100)) < #{fchance} THEN 10 ELSE 0 END)"
         end
 
         return rel if terms.empty?
 
         rel = rel.joins("LEFT JOIN (SELECT topic_id, SUM(direction) AS vscore FROM coin_engine_post_votes GROUP BY topic_id) pv ON pv.topic_id = topics.id") if use_votes && w_eng > 0
 
-        rel
+        scored = rel
           .select("topics.*, (#{terms.join(' + ')}) AS rr_feed_score")
           .reorder(Arel.sql("rr_feed_score DESC, topics.bumped_at DESC"))
+
+        # Materialize the scored query HERE, inside the rescue, so a bad SQL term
+        # (e.g. an int overflow on a high-id row) can NEVER 500 the feed while the
+        # controller/view enumerates the (otherwise lazy) relation. The bounded
+        # LIMIT still forces a full score+sort, so a row-dependent error surfaces
+        # and is caught -> we fall back to the plain list instead of crashing.
+        scored.limit(50).to_a
+        scored
       rescue StandardError => e
         Rails.logger.warn("[rr_geo] hybrid feed fell back to default: #{e.class} #{e.message}")
         rel
