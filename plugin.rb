@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
-# about: GEO-prioritized topic feed + click-to-edit location widget. Auto-detects location via ipinfo.io for new users; lets them update on the fly via the feed widget. v0.3.0+ adds inline editor, city suggestions, recent-locations history, and a server-side endpoint for in-place updates.
-# version: 0.3.0
+# about: Hybrid relevance feed (location + content-affinity recommender + engagement/votes + freshness) with a click-to-edit location widget. Auto-detects location via ipinfo.io; v0.4.0 adds the weighted multi-signal ranking on top of the original geo prioritization.
+# version: 0.4.0
 # authors: build23w
 
 enabled_site_setting :rr_geo_enabled
@@ -47,6 +47,18 @@ after_initialize do
     end
 
     module TopicQueryExtension
+      # v0.4.0 — Hybrid relevance feed. Replaces the old binary geo rank with a
+      # weighted score blending FOUR signals (each weight is a tunable site
+      # setting), ordered DESC:
+      #   (1) LOCATION  — title/tag/category matches the user's location tokens
+      #   (2) AFFINITY  — content-based recommender: categories the user
+      #                   tracks/watches OR has posted in (revealed interest)
+      #   (3) ENGAGEMENT— coin-engine up/down votes + likes + replies + views,
+      #                   log-damped so runaway threads don't dominate forever
+      #   (4) FRESHNESS — recency decay so new content keeps surfacing
+      # Degrades gracefully: a missing location / affinity / votes table simply
+      # drops that term, so even a profile-less user still gets an
+      # engagement+freshness "hot" feed instead of plain chronological.
       def latest_results(options = {})
         rel = super
         return rel unless SiteSetting.rr_geo_enabled
@@ -55,31 +67,66 @@ after_initialize do
         user = @guardian&.user
         return rel unless user
 
-        location = user.user_profile&.location
-        tokens = ::RrGeo::Util.tokens_from_location(location)
-        return rel if tokens.blank?
+        w_geo   = (SiteSetting.rr_geo_weight_location   rescue 3).to_f
+        w_aff   = (SiteSetting.rr_geo_weight_affinity   rescue 2).to_f
+        w_eng   = (SiteSetting.rr_geo_weight_engagement rescue 2).to_f
+        w_fresh = (SiteSetting.rr_geo_weight_freshness  rescue 2).to_f
 
-        patterns = tokens.map { |t| "%#{ActiveRecord::Base.sanitize_sql_like(t)}%" }
-        q_array = ::RrGeo::Util.quote_patterns(patterns)
+        terms = []
+
+        # (1) Location — EXISTS subqueries avoid row multiplication (no DISTINCT needed)
+        tokens = ::RrGeo::Util.tokens_from_location(user.user_profile&.location)
+        if tokens.present? && w_geo > 0
+          q = ::RrGeo::Util.quote_patterns(tokens.map { |t| "%#{ActiveRecord::Base.sanitize_sql_like(t)}%" })
+          terms << "#{w_geo} * (CASE WHEN topics.title ILIKE ANY (ARRAY[#{q}]) " \
+                   "OR EXISTS (SELECT 1 FROM topic_tags tt JOIN tags tg ON tg.id = tt.tag_id WHERE tt.topic_id = topics.id AND tg.name ILIKE ANY (ARRAY[#{q}])) " \
+                   "OR EXISTS (SELECT 1 FROM categories cc WHERE cc.id = topics.category_id AND cc.name ILIKE ANY (ARRAY[#{q}])) " \
+                   "THEN 1 ELSE 0 END)"
+        end
+
+        # (2) Affinity (content-based recommender)
+        if w_aff > 0
+          aff_ids = ::RrGeo::TopicQueryExtension.affinity_category_ids(user.id)
+          terms << "#{w_aff} * (CASE WHEN topics.category_id IN (#{aff_ids.join(',')}) THEN 1 ELSE 0 END)" if aff_ids.present?
+        end
+
+        # (3) Engagement (log-damped; includes coin-engine votes when present)
+        use_votes = ::RrGeo::TopicQueryExtension.votes_available?
+        if w_eng > 0
+          vexpr = use_votes ? "3 * COALESCE(pv.vscore, 0)" : "0"
+          terms << "#{w_eng} * ln(1 + GREATEST(0, #{vexpr} + 2 * COALESCE(topics.like_count, 0) + COALESCE(topics.posts_count, 0) + 0.1 * COALESCE(topics.views, 0)))"
+        end
+
+        # (4) Freshness — decays over days
+        terms << "#{w_fresh} * (1.0 / (1.0 + (EXTRACT(EPOCH FROM (now() - topics.bumped_at)) / 86400.0)))" if w_fresh > 0
+
+        return rel if terms.empty?
+
+        rel = rel.joins("LEFT JOIN (SELECT topic_id, SUM(direction) AS vscore FROM coin_engine_post_votes GROUP BY topic_id) pv ON pv.topic_id = topics.id") if use_votes && w_eng > 0
 
         rel
-          .where("topics.views >= 3")
-          .joins(<<~SQL)
-            LEFT JOIN topic_tags tt ON tt.topic_id = topics.id
-            LEFT JOIN tags tg ON tg.id = tt.tag_id
-            LEFT JOIN categories c ON c.id = topics.category_id
-          SQL
-          .select(<<~SQL)
-            topics.*,
-            CASE
-              WHEN topics.title ILIKE ANY (ARRAY[#{q_array}])
-                OR tg.name      ILIKE ANY (ARRAY[#{q_array}])
-                OR c.name       ILIKE ANY (ARRAY[#{q_array}])
-              THEN 0 ELSE 1
-            END AS rr_geo_rank
-          SQL
-          .distinct(true)
-          .reorder(Arel.sql("rr_geo_rank ASC, topics.bumped_at DESC"))
+          .select("topics.*, (#{terms.join(' + ')}) AS rr_feed_score")
+          .reorder(Arel.sql("rr_feed_score DESC, topics.bumped_at DESC"))
+      rescue StandardError => e
+        Rails.logger.warn("[rr_geo] hybrid feed fell back to default: #{e.class} #{e.message}")
+        rel
+      end
+
+      # Whether the coin-engine votes table exists (cached per process).
+      def self.votes_available?
+        return @votes_available unless @votes_available.nil?
+        @votes_available = (ActiveRecord::Base.connection.table_exists?('coin_engine_post_votes') rescue false)
+      end
+
+      # Categories the user explicitly tracks/watches + categories they've posted
+      # in (revealed preference). Capped + sanitized to integers for safe SQL.
+      def self.affinity_category_ids(user_id)
+        ids = []
+        ids += (::CategoryUser.where(user_id: user_id).where('notification_level >= 2').pluck(:category_id) rescue [])
+        ids += (::Topic.where(user_id: user_id).order(created_at: :desc).limit(200).pluck(:category_id) rescue [])
+        ids.compact.map(&:to_i).uniq.first(50)
+      rescue StandardError
+        []
       end
     end
   end

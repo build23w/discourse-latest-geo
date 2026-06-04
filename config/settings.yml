@@ -10,3 +10,21 @@ plugins:
   rr_geo_default_tokens:
     default: "toronto,gta,ontario,canada"
     client: true
+
+  # ===== v0.4.0 hybrid feed ranking weights (relative; 0 disables a signal) =====
+  rr_geo_weight_location:
+    default: 3
+    min: 0
+    max: 100
+  rr_geo_weight_affinity:
+    default: 2
+    min: 0
+    max: 100
+  rr_geo_weight_engagement:
+    default: 2
+    min: 0
+    max: 100
+  rr_geo_weight_freshness:
+    default: 2
+    min: 0
+    max: 100
