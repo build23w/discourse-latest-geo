@@ -11,6 +11,7 @@ const GEO_POLL_INTERVAL_MS = 0; // set >0 to enable periodic checks
 const GEO_RELOAD_MIN_INTERVAL_MS = 60 * 1000; // 60s
 
 const IPINFO_URL = "https://ipinfo.io/json";
+let IPINFO_TOKEN = ""; // set from site settings at init (free tokens lift the anon limit)
 
 function nowMs() {
   return Date.now ? Date.now() : new Date().getTime();
@@ -93,7 +94,8 @@ function fetchSessionIp(api) {
 }
 
 async function fetchIpinfo() {
-  const res = await fetch(IPINFO_URL, {
+  const url = IPINFO_TOKEN ? `${IPINFO_URL}?token=${encodeURIComponent(IPINFO_TOKEN)}` : IPINFO_URL;
+  const res = await fetch(url, {
     headers: { Accept: "application/json" },
   });
   if (!res.ok) {
@@ -204,7 +206,8 @@ export default {
       if (!ss?.rr_geo_enabled) {
         return;
       }
-      await refreshGeoIfNeeded(api, { force: true });
+      IPINFO_TOKEN = (ss.rr_geo_ipinfo_token || "").trim();
+      await refreshGeoIfNeeded(api);
 
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible") {
