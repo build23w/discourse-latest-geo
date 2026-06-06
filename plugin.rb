@@ -43,6 +43,21 @@ after_initialize do
         nil
       end
 
+      # SCALE: the engagement term used to LEFT JOIN an aggregate over the ENTIRE
+      # coin_engine_post_votes table per request. Votes are sparse, so we cache a
+      # bounded topic_id->score map for 60s (one aggregate per minute server-wide)
+      # and inline it as a VALUES join instead.
+      def self.votes_map
+        ::Discourse.cache.fetch("rr_geo_votes_map_v1", expires_in: 60.seconds) do
+          ::ActiveRecord::Base.connection.exec_query(
+            "SELECT topic_id, SUM(direction)::int AS s FROM coin_engine_post_votes " \
+            "GROUP BY topic_id ORDER BY ABS(SUM(direction)) DESC LIMIT 500"
+          ).rows.each_with_object({}) { |r, h| h[r[0].to_i] = r[1].to_i }
+        end
+      rescue StandardError
+        {}
+      end
+
       def self.f(key, default)
         (SiteSetting.public_send(key) rescue default).to_f
       end
@@ -87,6 +102,8 @@ after_initialize do
         # Engagement: log-damped votes + likes + replies + views.
         use_votes = votes_available?
         w_eng = u.f(:rr_geo_weight_engagement, 2)
+        vmap = (use_votes && w_eng > 0) ? u.votes_map : {}
+        use_votes = false if vmap.empty?
         if w_eng > 0
           vexpr = use_votes ? "3 * COALESCE(pv.vscore, 0)" : "0"
           terms << "#{w_eng} * ln(1 + GREATEST(0, #{vexpr} + 2 * COALESCE(topics.like_count, 0) + COALESCE(topics.posts_count, 0) + 0.1 * COALESCE(topics.views, 0)))"
@@ -137,7 +154,10 @@ after_initialize do
 
         return rel if terms.empty?
 
-        rel = rel.joins("LEFT JOIN (SELECT topic_id, SUM(direction) AS vscore FROM coin_engine_post_votes GROUP BY topic_id) pv ON pv.topic_id = topics.id") if use_votes && w_eng > 0
+        if use_votes && w_eng > 0
+          vals = vmap.map { |tid, sc| "(#{tid.to_i},#{sc.to_i})" }.join(",")
+          rel = rel.joins("LEFT JOIN (VALUES #{vals}) AS pv(topic_id, vscore) ON pv.topic_id = topics.id")
+        end
         rel.select("topics.*, (#{terms.join(' + ')}) AS rr_feed_score")
            .reorder(Arel.sql("rr_feed_score DESC, topics.bumped_at DESC"))
       rescue => e
