@@ -2,7 +2,7 @@ import { ajax } from "discourse/lib/ajax";
 import { withPluginApi } from "discourse/lib/plugin-api";
 
 // ============================================================================
-// rr-geo-recommender  (v0.6.0)
+// rr-geo-recommender  (v0.6.1)
 // A tiny ONLINE LOGISTIC-REGRESSION recommender that runs entirely in the
 // browser, side-by-side with the user. No libraries, no server training.
 //
@@ -491,6 +491,29 @@ export default {
           });
         } catch (e) {}
       }
+
+      // ---- shorts engagement: the rail (theme) dispatches
+      // CustomEvent("rr-shorts-engage", { detail: { tags: [...],
+      // area: "tiling", action: "watch|complete|like|dislike|share" } })
+      // so shorts teach the same model that ranks the topic feed. Watching a
+      // tiling short makes tiling THREADS surface — video and forum learning
+      // reinforce each other.
+      window.addEventListener("rr-shorts-engage", (e) => {
+        try {
+          const d = (e && e.detail) || {};
+          const feats = [];
+          (d.tags || []).forEach((t) => {
+            const c = clean(t);
+            if (c) { feats.push("tag:" + c); }
+          });
+          if (d.area) { feats.push("skill:" + clean(d.area)); }
+          if (!feats.length) { return; }
+          const action = d.action || "watch";
+          const label = action === "dislike" ? 0 : 1;
+          const mult = { like: 1.6, complete: 1.5, share: 1.8, dislike: 1.2, watch: 0.8 }[action] || 0.8;
+          learn(feats, label, mult);
+        } catch (err) {}
+      });
 
       api.onPageChange((url) => {
         finalizeDwell(url);          // grade the open we navigated away from
