@@ -1,26 +1,15 @@
 /* discourse-latest-geo v0.3.0 -- click-to-edit feed label */
 
 .rr-geo-feed-label {
-  display: flex;
+  /* Visual styling (the gradient banner) lives in the theme "common" scss so the
+     two definitions don't fight. This plugin block carries only behaviour + box.
+     NOTE: display:flex / align-items come from the theme banner rule. */
   width: 100%;
-  align-items: center;
-  gap: 8px;
-  margin: 0 0 0.6rem 0;
-  padding: 7px 12px;
-  border-radius: 8px;
-  font-size: var(--font-down-1);
-  background: var(--primary-very-low);
-  border: 1px solid var(--primary-low);
-  color: var(--primary);
   cursor: pointer;
   transition: background .15s ease, border-color .15s ease, transform .15s ease;
   user-select: none;
   text-align: left;
   box-sizing: border-box;
-
-  /* button reset for the .is-set / .is-unset variants which render as <button> */
-  font-family: inherit;
-  line-height: inherit;
 
   &__icon {
     font-size: 14px;
