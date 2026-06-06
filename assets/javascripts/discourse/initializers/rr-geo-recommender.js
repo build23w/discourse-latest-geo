@@ -474,6 +474,7 @@ export default {
       const anonOk = !ss || ss.rr_geo_anon_personalization !== false;
       if (!cu && !anonOk) { return; }   // anon mode: learn + re-rank locally, never sync
       canSync = !!cu;
+      window.__rrRecActive = true;  // theme learn-bridges defer to this model
 
       wireInteractions();
       seedPrior();

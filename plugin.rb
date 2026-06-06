@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Location-aware relevance feed (geo + content affinity + engagement + freshness) with a click-to-edit location widget. Location is auto-detected via ipinfo.io.
-# version: 0.11.0
+# version: 0.11.1
 
 # v0.10.0 perf refactor:
 #   * NO per-row string matching in the feed query. Geo + learned-interest
@@ -297,19 +297,23 @@ after_initialize do
                 []
               end
             end
-            if ids.present?
-              window = ids[offset, per_page] || []
-              if window.present?
-                return rel.except(:order, :limit, :offset)
-                          .where("topics.id IN (?)", window)
-                          .reorder(Arel.sql(
-                            "array_position(ARRAY[#{window.join(',')}]::int[], topics.id)"
-                          ))
-              end
-              # ids ran short of cache_n => fewer listable topics than the
-              # window => genuinely no more pages; fall through to live path
-              # which returns the same (empty) result with full correctness.
+            # v0.11.1: return the FULL cached id window as one ordered
+            # relation and let core paginate it. TopicQuery#create_list runs
+            # prioritize_pinned_topics on our result, which RE-APPLIES the
+            # page offset (`unpinned_topics.offset(page*per_page - pinned)`),
+            # so returning a pre-sliced page made every page > 0 come back
+            # empty (offset 30 over a 30-row relation). Keep rel's limit —
+            # core's page-0 branch slices `[0...limit]` and the page-N branch
+            # relies on the relation's limit after replacing the offset.
+            if ids.present? && ids.length > offset
+              return rel.except(:offset)
+                        .where("topics.id IN (?)", ids)
+                        .reorder(Arel.sql(
+                          "array_position(ARRAY[#{ids.join(',')}]::int[], topics.id)"
+                        ))
             end
+            # ids ran short of the requested page => genuinely past the end
+            # of the listable set; fall through to the live path.
           end
         end
 
@@ -323,7 +327,8 @@ after_initialize do
 
       def rr_cacheable?(options)
         options[:category].blank? && options[:tags].blank? &&
-          options[:topic_ids].blank? && options[:q].blank?
+          options[:topic_ids].blank? && options[:q].blank? &&
+          options[:skip_ordering].blank? && options[:include_muted].nil?
       end
 
       # Builds the scored relation. Returns nil when no signal applies.
