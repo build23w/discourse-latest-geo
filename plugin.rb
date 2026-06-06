@@ -21,7 +21,7 @@
 #   * Optional write-time city auto-tagging job (rr_geo_auto_tag_cities,
 #     default OFF) so local topics that name their city anywhere in the first
 #     post become geo-matchable via indexed tags.
-#
+
 # v0.11.0 structured graded geo:
 #   * Location is now structured "City, Province/State, Country" (required on
 #     save; legacy two-part values keep working until next edit).
