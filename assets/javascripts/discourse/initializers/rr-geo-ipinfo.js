@@ -11,6 +11,13 @@ const GEO_POLL_INTERVAL_MS = 0; // set >0 to enable periodic checks
 const GEO_RELOAD_MIN_INTERVAL_MS = 60 * 1000; // 60s
 
 const IPINFO_URL = "https://ipinfo.io/json";
+
+// v0.11: profile locations are structured "City, Province/State, Country".
+// ipinfo returns ISO country codes; map the common ones, fall back to code.
+const COUNTRY_NAMES = {
+  CA: "Canada", US: "United States", GB: "United Kingdom", AU: "Australia",
+  NZ: "New Zealand", IE: "Ireland", IN: "India", FR: "France", DE: "Germany",
+};
 let IPINFO_TOKEN = ""; // set from site settings at init (free tokens lift the anon limit)
 
 function nowMs() {
@@ -107,7 +114,7 @@ async function fetchIpinfo() {
 
 async function updateProfileLocation(
   api,
-  { city, region, onlyIfBlank = true }
+  { city, region, country, onlyIfBlank = true }
 ) {
   const currentUser = api.getCurrentUser?.();
   if (!currentUser) {
@@ -117,7 +124,9 @@ async function updateProfileLocation(
     return;
   }
 
-  const loc = city && region ? `${city}, ${region}` : city || region || "";
+  // v0.11: only write fully-structured three-part locations — a partial
+  // value would fail server-side validation on the user's next manual save.
+  const loc = city && region && country ? `${city}, ${region}, ${country}` : "";
   if (!loc) {
     return;
   }
@@ -149,14 +158,15 @@ async function bootstrapFromIpinfo(api, { persistIp }) {
   const region = j?.region;
   const country = j?.country;
 
-  const toks = tokenizePieces(city, region, country).filter(Boolean);
+  const countryName = COUNTRY_NAMES[country] || country;
+  const toks = tokenizePieces(city, region, countryName, country).filter(Boolean);
   const csv = toks.length ? toks.join(",") : "toronto,gta,ontario,canada";
 
   if (tokensChanged(csv)) {
     localStorage.setItem(GEO_TOKENS_KEY, csv);
     dispatchGeoUpdated();
   }
-  await updateProfileLocation(api, { city, region, onlyIfBlank: true });
+  await updateProfileLocation(api, { city, region, country: countryName, onlyIfBlank: true });
 
   if (persistIp) {
     localStorage.setItem(GEO_LAST_IP_KEY, persistIp || j?.ip || "");

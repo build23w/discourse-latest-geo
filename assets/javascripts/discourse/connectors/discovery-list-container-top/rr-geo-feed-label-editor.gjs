@@ -11,10 +11,19 @@ const RECENTS_KEY = "rr-geo.recent-locations";
 const RECENTS_MAX = 5;
 
 const FALLBACK_CITIES = [
-  "Toronto, Ontario", "Mississauga, Ontario", "Brampton, Ontario",
-  "Hamilton, Ontario", "Ottawa, Ontario", "Vancouver, BC",
-  "Calgary, Alberta", "Montreal, Quebec",
+  "Toronto, Ontario, Canada", "Mississauga, Ontario, Canada", "Brampton, Ontario, Canada",
+  "Hamilton, Ontario, Canada", "Ottawa, Ontario, Canada", "Vancouver, BC, Canada",
+  "Calgary, Alberta, Canada", "Montreal, Quebec, Canada",
 ];
+
+// v0.11: locations are structured "City, Province/State, Country" so the
+// server can grade proximity (city > nearby > province > country).
+const STRUCTURE_ERROR =
+  'Please include town/city, province/state, and country — e.g. "Orangeville, Ontario, Canada"';
+
+function isStructured(loc) {
+  return loc.split(",").map((p) => p.trim()).filter(Boolean).length >= 3;
+}
 
 function readRecents() {
   try {
@@ -119,6 +128,10 @@ export default class RrGeoFeedLabelEditor extends Component {
     if (event) event.stopPropagation();
     if (this.saving) return;
     const newLoc = (this.inputValue || "").trim();
+    if (newLoc && !isStructured(newLoc)) {
+      this.errorMessage = STRUCTURE_ERROR;
+      return;
+    }
     this.saving = true;
     this.errorMessage = null;
     try {
@@ -156,8 +169,9 @@ export default class RrGeoFeedLabelEditor extends Component {
         }
       } catch (_) { /* silent -- label is already updated */ }
     } catch (e) {
-      this.errorMessage = "Couldn't save. Try again?";
-      try { popupAjaxError(e); } catch {}
+      const serverMsg = e?.jqXHR?.responseJSON?.error;
+      this.errorMessage = serverMsg || "Couldn't save. Try again?";
+      if (!serverMsg) { try { popupAjaxError(e); } catch {} }
     } finally {
       this.saving = false;
     }
@@ -184,7 +198,7 @@ export default class RrGeoFeedLabelEditor extends Component {
           <input class="rr-geo-edit__input"
                  type="text"
                  value={{this.inputValue}}
-                 placeholder="e.g. Toronto, Ontario"
+                 placeholder="e.g. Toronto, Ontario, Canada"
                  maxlength="200"
                  {{on "input" this.inputChanged}} />
           <button class="rr-geo-edit__save"

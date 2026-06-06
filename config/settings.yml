@@ -56,15 +56,10 @@ plugins:
     max: 100
 
   # ===== v0.8.0 LIVE- adaptation server complements =====
-  # Re-seed the explore + fresh-lottery jitter every N minutes (instead of once
-  # per day) so the feed visibly rotates on each visit. Stays constant within a
-  # single scroll session (pages load within seconds), so pagination is stable.
   rr_geo_seed_bucket_minutes:
     default: 25
     min: 5
     max: 1440
-  # Engagement VELOCITY: boost topics getting activity RIGHT NOW (recent posts),
-  # so "hot right now" bubbles up instead of old cumulative-heavy threads.
   rr_geo_weight_velocity:
     default: 3
     min: 0
@@ -73,3 +68,37 @@ plugins:
     default: 8
     min: 1
     max: 168
+
+  # ===== v0.10.0 performance refactor =====
+  # Full scoring only runs for topics bumped within this window; the long
+  # tail short-circuits to 0 and falls back to bumped order.
+  rr_geo_rank_horizon_days:
+    default: 60
+    min: 1
+    max: 3650
+  # Serve feed pages from a per-(user, seed-bucket) cached id window. The
+  # feed is stable within a bucket BY DESIGN, so bucket expiry invalidates.
+  rr_geo_cache_enabled:
+    default: true
+  rr_geo_cache_topics:
+    default: 150
+    min: 30
+    max: 500
+  # Cap on prefetched geo/learned boost ids inlined as a VALUES join.
+  rr_geo_match_limit:
+    default: 400
+    min: 50
+    max: 2000
+  # Client model re-ranks the topic-list DATA before render (bounded lift).
+  rr_geo_client_rerank:
+    default: true
+    client: true
+  # Logged-out visitors learn + re-rank locally; nothing is synced.
+  rr_geo_anon_personalization:
+    default: true
+    client: true
+  # Daily job tags recent topics with detected city names (title or first
+  # post) so geo matching rides the indexed tag path. Visible content change
+  # -- intentionally OFF until explicitly enabled.
+  rr_geo_auto_tag_cities:
+    default: false
