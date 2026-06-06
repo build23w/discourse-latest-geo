@@ -2,7 +2,7 @@
 # name: discourse-latest-geo
 # about: Location-aware relevance feed (geo + content affinity + engagement + freshness) with a click-to-edit location widget. Location is auto-detected via ipinfo.io.
 # version: 0.11.0
-#
+
 # v0.10.0 perf refactor:
 #   * NO per-row string matching in the feed query. Geo + learned-interest
 #     matches are resolved to bounded topic-id sets with one-shot indexed
