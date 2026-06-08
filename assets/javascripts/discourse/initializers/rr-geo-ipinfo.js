@@ -60,6 +60,11 @@ function dispatchGeoUpdated() {
 }
 
 function hardReloadIfAllowed({ enabled = true } = {}) {
+  // Retained as a no-op (soft refresh only) — see ipChanged handler. A full
+  // page reload to refresh geo ranking is far too heavy and caused double-loads.
+  dispatchGeoUpdated();
+  return;
+  // eslint-disable-next-line no-unreachable
   if (!enabled) {
     return;
   }
@@ -189,10 +194,14 @@ async function refreshGeoIfNeeded(api, { force = false } = {}) {
   if (needsBootstrap || ipChanged || firstRun || force) {
     try {
       await bootstrapFromIpinfo(api, { persistIp: sessionIp });
+      // 2026-06-08: NEVER hard-reload. Behind Cloudflare/HAProxy the per-request
+      // client_ip legitimately varies (different edge), so ipChanged was
+      // chronically true and window.location.reload() fired on nearly every
+      // fresh load (throttled to 60s) = the "double load" users reported. Geo
+      // ranking is server-side and picks up new tokens on the next natural
+      // fetch; a soft event refreshes any listening widget without a reload.
       if (ipChanged && !firstRun) {
-        hardReloadIfAllowed({
-          enabled: true,
-        });
+        dispatchGeoUpdated();
       }
     } catch {
       if (!(localStorage.getItem(GEO_TOKENS_KEY) || "").trim()) {

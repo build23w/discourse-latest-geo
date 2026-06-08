@@ -189,7 +189,6 @@ export default class RrGeoFeedLabelEditor extends Component {
       <div class="rr-geo-feed-label is-guest" role="note" aria-live="polite">
         <span class="rr-geo-feed-label__icon">📍</span>
         <a href="/login">Log in</a>
-        to set your location and get a feed tuned to your area.
       </div>
     {{else if this.editing}}
       <div class="rr-geo-feed-label is-editing" role="dialog" aria-label="Edit your location">
