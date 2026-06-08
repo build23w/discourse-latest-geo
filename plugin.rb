@@ -130,6 +130,25 @@ after_initialize do
         patterns.map { |p| conn.quote(p) }.join(",")
       end
 
+      # True client IP. Behind Cloudflare, request.remote_ip resolves to the CF
+      # EDGE ip (and rotates per request across CF's pool), which broke geo,
+      # per-IP rate limiting and abuse logging. CF sets CF-Connecting-IP to the
+      # real client and overwrites any client-supplied value, so it's safe to
+      # trust as long as the origin only serves CF traffic. Falls back to the
+      # XFF head, then remote_ip. (Proper fix is reverse-proxy trust config in
+      # app.yml; this makes the plugin correct regardless.)
+      def self.real_ip(request)
+        cf = request.get_header('HTTP_CF_CONNECTING_IP').to_s.strip
+        return cf unless cf.empty?
+        tc = request.get_header('HTTP_TRUE_CLIENT_IP').to_s.strip
+        return tc unless tc.empty?
+        xff = request.get_header('HTTP_X_FORWARDED_FOR').to_s.split(',').first.to_s.strip
+        return xff unless xff.empty?
+        request.remote_ip
+      rescue StandardError
+        request.remote_ip
+      end
+
       def self.mask_ip(ip)
         return nil if ip.blank?
         addr = IPAddr.new(ip.to_s)
@@ -527,7 +546,7 @@ after_initialize do
     private
 
     def rr_track_client_ip
-      curr_ip = request.remote_ip
+      curr_ip = ::RrGeo::Util.real_ip(request)
       RequestStore.store[:rr_client_ip] = curr_ip
       RequestStore.store[:rr_ip_changed] = session[:rr_last_ip].present? && session[:rr_last_ip] != curr_ip
       session[:rr_last_ip] = curr_ip
