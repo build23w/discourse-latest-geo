@@ -58,12 +58,27 @@ after_initialize do
   module ::RrGeo
     class Util
       # Memoized per request — called from the ranker AND two serializers.
+      # Standalone words too generic to be a useful geo signal (they match
+      # unrelated content). Kept only inside multi-word phrases ("new york").
+      GEO_STOPWORDS = %w[new north south east west upper lower central united
+                         states state province county region city town village
+                         the of and les des].freeze
+
       def self.tokens_from_location(loc)
         return [] if loc.blank?
         memo = (RequestStore.store[:rr_geo_tok_memo] ||= {})
         memo[loc] ||= begin
-          words = loc.to_s.downcase.split(/[^a-z0-9]+/).select { |t| t.length >= 3 }
-          (words + words.each_cons(2).map { |a, b| "#{a} #{b}" }).uniq
+          out = []
+          # Location is "City, Region, Country" — tokenize WITHIN each comma
+          # segment so we never build cross-boundary garbage like "york united".
+          loc.to_s.downcase.split(',').each do |seg|
+            words = seg.split(/[^a-z0-9]+/).select { |t| t.length >= 3 }
+            next if words.empty?
+            out << words.join(' ') if words.length >= 2            # full segment phrase
+            words.each_cons(2) { |a, b| out << "#{a} #{b}" } if words.length > 2
+            words.each { |w| out << w unless GEO_STOPWORDS.include?(w) }  # non-generic singles
+          end
+          out.uniq.reject(&:empty?)
         end
       end
 

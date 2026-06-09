@@ -5,6 +5,7 @@ const GEO_TOKENS_KEY = "geo.tokens";
 const GEO_LAST_IP_KEY = "geo.lastIp";
 const GEO_CHECKED_AT_KEY = "geo.checkedAt";
 const GEO_LAST_RELOAD_AT_KEY = "geo.lastReloadAt";
+const GEO_AUTOSET_KEY = "geo.autoset"; // marks a location WE auto-detected (safe to self-correct)
 
 const GEO_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const GEO_POLL_INTERVAL_MS = 0; // set >0 to enable periodic checks
@@ -125,14 +126,21 @@ async function updateProfileLocation(
   if (!currentUser) {
     return;
   }
-  if (onlyIfBlank && currentUser.location) {
-    return;
+  // v0.11.2: a profile location stuck on a stale/wrong value (e.g. an old
+  // VPN session left "New York" while the user is really in Ontario) used to
+  // be permanent because we only wrote when blank. Now we ALSO self-correct,
+  // but ONLY a location WE previously auto-set (tracked via GEO_AUTOSET_KEY) —
+  // a value the user typed manually is never overwritten.
+  const existing = (currentUser.location || "").trim();
+  const wasAutoSet = (() => { try { return localStorage.getItem(GEO_AUTOSET_KEY) === existing; } catch { return false; } })();
+  if (onlyIfBlank && existing && !wasAutoSet) {
+    return; // manual / unknown-origin value: leave it alone
   }
 
-  // v0.11: only write fully-structured three-part locations — a partial
-  // value would fail server-side validation on the user's next manual save.
+  // Only write fully-structured three-part locations — a partial value would
+  // fail server-side validation on the user's next manual save.
   const loc = city && region && country ? `${city}, ${region}, ${country}` : "";
-  if (!loc) {
+  if (!loc || loc === existing) {
     return;
   }
 
@@ -142,6 +150,7 @@ async function updateProfileLocation(
       data: { location: loc },
     });
     currentUser.location = loc;
+    try { localStorage.setItem(GEO_AUTOSET_KEY, loc); } catch {}
   } catch {}
 }
 
@@ -171,7 +180,7 @@ async function bootstrapFromIpinfo(api, { persistIp }) {
     localStorage.setItem(GEO_TOKENS_KEY, csv);
     dispatchGeoUpdated();
   }
-  await updateProfileLocation(api, { city, region, country: countryName, onlyIfBlank: true });
+  await updateProfileLocation(api, { city, region, country: countryName, onlyIfBlank: false });
 
   if (persistIp) {
     localStorage.setItem(GEO_LAST_IP_KEY, persistIp || j?.ip || "");
