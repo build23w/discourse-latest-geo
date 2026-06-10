@@ -118,7 +118,20 @@ module RrGeo
         if q.length < 2
           pool.first(8)
         else
-          pool.select { |c| c.downcase.include?(q) }.first(8)
+          # v0.14: curated list first (home-market polish), then the full
+          # ~19.8K-locality geo mesh so ANY Canada/US town autocompletes.
+          curated = pool.select { |c| c.downcase.include?(q) }
+          mesh =
+            if defined?(::RrGeo::GeoMesh)
+              begin
+                ::RrGeo::GeoMesh.search(q, limit: 8)
+              rescue StandardError
+                []
+              end
+            else
+              []
+            end
+          (curated + mesh).uniq { |c| c.downcase }.first(8)
         end
 
       render json: { suggestions: results }

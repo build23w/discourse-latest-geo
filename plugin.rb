@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Location-aware relevance feed (geo + content affinity + engagement + freshness) with a click-to-edit location widget. Location is auto-detected via ipinfo.io.
-# version: 0.13.0
+# version: 0.14.0
 
 # v0.10.0 perf refactor:
 #   * NO per-row string matching in the feed query. Geo + learned-interest
@@ -41,6 +41,17 @@
 #   * Client: window.rrRec public scoring/learning API + opt-in device-GPS
 #     location button (ipinfo auto-detect unchanged and still the default).
 
+# v0.14.0 geo mesh:
+#   * REAL GEOFENCING: the curated 27-city NEARBY_CITIES map is now only a
+#     hand-tuned overlay. ::RrGeo::GeoMesh radius-geofences nearby localities
+#     for ANY Canada/US town: ~19.8K GeoNames localities (CC BY 4.0) with
+#     lat/lon centroids, haversine over a lat-sorted window, memoized.
+#     Settings: rr_geo_nearby_radius_km (50), rr_geo_nearby_limit (14).
+#   * Location typeahead searches the full mesh (any town, Canada-first
+#     ranking) instead of a 50-city static list.
+#   * Privacy unchanged: mesh uses locality centroids only; user coordinates
+#     are never stored.
+
 enabled_site_setting :rr_geo_enabled
 
 register_asset "stylesheets/common/rr-geo-feed-label.scss"
@@ -58,6 +69,7 @@ after_initialize do
     object.excerpt
   end
   load File.expand_path('../app/controllers/rr_geo/locations_controller.rb', __FILE__)
+  load File.expand_path('../lib/rr_geo/geo_mesh.rb', __FILE__)
 
   Discourse::Application.routes.append do
     put '/rr-geo/location.json'    => 'rr_geo/locations#update'
@@ -137,14 +149,51 @@ after_initialize do
         (words + words.each_cons(2).map { |a, b| "#{a} #{b}" }).uniq
       end
 
+      # v0.14: tokens for NEARBY place names. Stricter than tokenize_piece:
+      # multi-word places match as the FULL PHRASE only ("richmond hill" must
+      # not emit bare "hill" — or "richmond", which would false-match
+      # Richmond BC), and generic single-word locality names ("Downtown",
+      # "City Park") are dropped entirely — a 0.7-weight ILIKE on %park%
+      # would geo-boost half the forum.
+      NEARBY_GENERIC = (GEO_STOPWORDS + %w[
+        downtown uptown midtown business district core neighbourhood
+        neighbourhoods park parks heights mission beach lake hill hills creek
+        river falls springs gardens garden grove point bay mount mills valley
+        view ridge crossing junction station place court estates
+      ]).freeze
+
+      def self.tokenize_nearby(name)
+        words = name.to_s.downcase.split(/[^a-z0-9]+/).select { |t| t.length >= 3 }
+        return [] if words.empty?
+        return [words.join(' ')] if words.length > 1
+        NEARBY_GENERIC.include?(words[0]) ? [] : words
+      end
+
       # [[tokens, weight], ...] — own city 1.0, nearby 0.7, province 0.45,
       # country 0.2. Legacy "City, Province" values simply have no country level.
       def self.leveled_tokens(loc)
         p = location_parts(loc)
         levels = []
         levels << [tokenize_piece(p[:city]), 1.0] if p[:city].present?
-        if p[:city].present? && (near = NEARBY_CITIES[p[:city]]).present?
-          levels << [near.flat_map { |n| tokenize_piece(n) }.uniq, 0.7]
+        if p[:city].present?
+          near = (NEARBY_CITIES[p[:city]] || [])
+          # v0.14: GEO MESH — radius geofence for ANY town. The curated map
+          # above stays as a hand-tuned overlay (GTA core quality); the mesh
+          # makes "nearby" real everywhere else (Moncton, Missoula, ...).
+          if defined?(::RrGeo::GeoMesh)
+            mesh = begin
+              ::RrGeo::GeoMesh.neighbors(
+                p[:city], p[:province],
+                radius_km: i(:rr_geo_nearby_radius_km, 50),
+                limit: i(:rr_geo_nearby_limit, 14)
+              )
+            rescue StandardError
+              []
+            end
+            near = (near + mesh.map { |n, _a, _d| n.downcase }).uniq
+          end
+          near_toks = near.flat_map { |n| tokenize_nearby(n) }.uniq
+          levels << [near_toks, 0.7] if near_toks.present?
         end
         levels << [tokenize_piece(p[:province]), 0.45] if p[:province].present?
         levels << [tokenize_piece(p[:country]), 0.2] if p[:country].present?

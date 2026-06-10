@@ -122,6 +122,16 @@ plugins:
     min: 0
     max: 12
 
+  # ===== v0.14.0 geo mesh: radius geofence for nearby localities =====
+  rr_geo_nearby_radius_km:
+    default: 50
+    min: 5
+    max: 300
+  rr_geo_nearby_limit:
+    default: 14
+    min: 1
+    max: 50
+
   # ===== v0.13.0 opt-in device-GPS location button (ipinfo stays default) =====
   rr_geo_gps_button_enabled:
     default: true
