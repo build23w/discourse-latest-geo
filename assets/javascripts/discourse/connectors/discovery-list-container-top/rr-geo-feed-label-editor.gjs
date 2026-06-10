@@ -43,12 +43,22 @@ function writeRecents(loc) {
   try { localStorage.setItem(RECENTS_KEY, JSON.stringify(list)); } catch {}
 }
 
+// v0.13: opt-in device-GPS path. The browser's own permission prompt is the
+// consent gate; we never store coordinates — they're immediately reverse-
+// geocoded (BigDataCloud's free client endpoint, no key) down to the same
+// "City, Province/State, Country" string the manual path saves. ipinfo
+// auto-detection is unchanged and remains the zero-friction default.
+const REVERSE_GEOCODE_URL =
+  "https://api.bigdatacloud.net/data/reverse-geocode-client";
+
 export default class RrGeoFeedLabelEditor extends Component {
   @service currentUser;
   @service router;
+  @service siteSettings;
 
   @tracked editing = false;
   @tracked saving = false;
+  @tracked locating = false;
   @tracked inputValue = "";
   @tracked suggestions = [];
   @tracked errorMessage = null;
@@ -177,6 +187,59 @@ export default class RrGeoFeedLabelEditor extends Component {
     }
   }
 
+  get gpsAvailable() {
+    return (
+      typeof navigator !== "undefined" &&
+      !!navigator.geolocation &&
+      this.siteSettings?.rr_geo_gps_button_enabled !== false
+    );
+  }
+
+  @action
+  async useDeviceLocation(event) {
+    if (event) event.stopPropagation();
+    if (this.locating) return;
+    if (!this.gpsAvailable) {
+      this.errorMessage = "Your browser doesn't support device location — type your city instead.";
+      return;
+    }
+    this.locating = true;
+    this.errorMessage = null;
+    try {
+      const pos = await new Promise((resolve, reject) =>
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: false,
+          timeout: 10000,
+          maximumAge: 300000,
+        })
+      );
+      const { latitude, longitude } = pos.coords;
+      const res = await fetch(
+        `${REVERSE_GEOCODE_URL}?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&localityLanguage=en`
+      );
+      if (!res.ok) throw new Error(`reverse-geocode ${res.status}`);
+      const j = await res.json();
+      const city = (j.city || j.locality || "").trim();
+      const region = (j.principalSubdivision || "").trim();
+      const country = (j.countryName || "").trim();
+      if (!city || !region || !country) {
+        this.errorMessage =
+          "Couldn't resolve a town/city from your device location — try typing it instead.";
+        return;
+      }
+      this.inputValue = `${city}, ${region}, ${country}`;
+      this.suggestions = [];
+      await this.save(null);
+    } catch (e) {
+      this.errorMessage =
+        e && e.code === 1
+          ? "Location permission was declined — no problem, you can type your city instead."
+          : "Couldn't get your device location — try typing your city instead.";
+    } finally {
+      this.locating = false;
+    }
+  }
+
   @action
   async clearLocation(event) {
     if (event) event.stopPropagation();
@@ -233,6 +296,20 @@ export default class RrGeoFeedLabelEditor extends Component {
                 {{r}}
               </button>
             {{/each}}
+          </div>
+        {{/if}}
+
+        {{#if this.gpsAvailable}}
+          <div class="rr-geo-edit__gps">
+            <button class="rr-geo-edit__gps-btn"
+                    type="button"
+                    disabled={{this.locating}}
+                    {{on "click" this.useDeviceLocation}}>
+              {{if this.locating "Locating…" "📡 Use my device location"}}
+            </button>
+            <span class="rr-geo-edit__gps-hint">
+              Optional — your browser will ask once; we only keep "City, Province, Country", never coordinates.
+            </span>
           </div>
         {{/if}}
 

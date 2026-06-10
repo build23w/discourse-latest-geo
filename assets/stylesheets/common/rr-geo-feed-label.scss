@@ -157,6 +157,34 @@
     color: var(--danger);
     font-size: 12px;
   }
+  /* v0.13 opt-in device-GPS button */
+  &__gps {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  &__gps-btn {
+    background: var(--primary-very-low);
+    color: var(--primary-high);
+    border: 1px solid var(--primary-low-mid);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 11.5px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    &:hover:not(:disabled) { background: var(--primary-low); border-color: var(--primary-medium); }
+    &:disabled { opacity: .6; cursor: wait; }
+  }
+  &__gps-hint {
+    color: var(--primary-medium);
+    font-size: 11px;
+    flex: 1;
+    min-width: 180px;
+  }
   &__footer {
     margin-top: 10px;
     border-top: 1px solid var(--primary-very-low);

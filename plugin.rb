@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Location-aware relevance feed (geo + content affinity + engagement + freshness) with a click-to-edit location widget. Location is auto-detected via ipinfo.io.
-# version: 0.11.1
+# version: 0.13.0
 
 # v0.10.0 perf refactor:
 #   * NO per-row string matching in the feed query. Geo + learned-interest
@@ -29,6 +29,17 @@
 #     curated nearby cities 0.7, province/state 0.45, country 0.2 — so a town
 #     with no posts of its own still gets a locally-relevant feed instead of
 #     falling back to nothing.
+
+# v0.13.0 recommendation hub:
+#   * ::RrGeo::SignalHub — canonical cross-plugin read API for every
+#     personalization signal (geo tokens, graded geo levels, learned interest
+#     profile, coin-engine follows, vote map). discourse-shorts now ranks with
+#     these instead of private copies; future surfaces should too.
+#   * SOCIAL feed signal: topics authored by people the user follows
+#     (coin-engine graph) get a weighted boost — mirrors the shorts rail's
+#     strongest signal. New setting rr_geo_weight_social.
+#   * Client: window.rrRec public scoring/learning API + opt-in device-GPS
+#     location button (ipinfo auto-detect unchanged and still the default).
 
 enabled_site_setting :rr_geo_enabled
 
@@ -191,6 +202,35 @@ after_initialize do
         {}
       end
 
+      # v0.10: weighted profile — entries normalize to [name, weight 0..1].
+      # Accepts v0.5 plain-name arrays, "name|w" strings, pairs, and hashes.
+      # v0.13: lives on Util so SignalHub can expose it cross-plugin.
+      def self.interest_profile(user)
+        raw = (user.custom_fields['rr_interest_profile'] rescue nil)
+        return { tags: [], categories: [] } if raw.blank?
+        h = (JSON.parse(raw) rescue {})
+        norm = lambda do |arr|
+          Array(arr).map do |e|
+            if e.is_a?(Array)
+              [e[0].to_s, (e[1] || 1).to_f]
+            elsif e.is_a?(Hash)
+              [(e['name'] || e[:name]).to_s, (e['w'] || e[:w] || 1).to_f]
+            else
+              s = e.to_s
+              if s.include?('|')
+                n, w = s.split('|', 2)
+                [n, w.to_f]
+              else
+                [s, 1.0]
+              end
+            end
+          end.reject { |n, _| n.blank? }.first(25)
+        end
+        { tags: norm.call(h['tags']), categories: norm.call(h['categories']) }
+      rescue
+        { tags: [], categories: [] }
+      end
+
       def self.f(key, default)
         (SiteSetting.public_send(key) rescue default).to_f
       end
@@ -207,15 +247,19 @@ after_initialize do
       #           geo_cat_ids: [int], learned_cats: {cat_id => w}, digest: }
       def self.user_boosts(user, prof, horizon_days)
         loc = user.user_profile&.location.to_s
+        # v0.13: follows feed the social signal AND the digest, so the cached
+        # feed window invalidates when the user's social graph changes.
+        followed = ::RrGeo::SignalHub.followed_ids(user)
         digest = Digest::MD5.hexdigest(
-          [loc, prof.to_json, horizon_days, i(:rr_geo_match_limit, 400)].join('|')
+          [loc, prof.to_json, horizon_days, i(:rr_geo_match_limit, 400),
+           followed.length, followed.first(50).join(',')].join('|')
         )[0, 12]
         cached = ::Discourse.cache.fetch("rr_geo_boost_v1_#{user.id}_#{digest}", expires_in: 5.minutes) do
           build_boosts(loc, prof, horizon_days)
         end
-        (cached || empty_boosts).merge(digest: digest)
+        (cached || empty_boosts).merge(digest: digest, followed: followed)
       rescue StandardError
-        empty_boosts.merge(digest: 'none')
+        empty_boosts.merge(digest: 'none', followed: [])
       end
 
       def self.empty_boosts
@@ -297,6 +341,58 @@ after_initialize do
         end
 
         { map: map, geo_cats: geo_cats, learned_cats: learned_cats }
+      end
+    end
+
+    # ---- v0.13: SIGNAL HUB -----------------------------------------------
+    # Canonical, cross-plugin READ API for every personalization signal this
+    # plugin owns. discourse-shorts (and any future surface: FAB hub, related
+    # topics, digests) should rank with THESE instead of growing private
+    # copies — one user model, many surfaces. Every method degrades to an
+    # empty value instead of raising, so callers never need their own rescue.
+    class SignalHub
+      # Flat tokenized location: ["orangeville", "orangeville ontario", ...]
+      def self.geo_tokens(user)
+        Util.tokens_from_location(user&.user_profile&.location)
+      rescue StandardError
+        []
+      end
+
+      # Graded geo levels: [[tokens, weight], ...] with own city 1.0,
+      # curated nearby 0.7, province/state 0.45, country 0.2.
+      def self.leveled_geo(user)
+        Util.leveled_tokens(user&.user_profile&.location.to_s)
+      rescue StandardError
+        []
+      end
+
+      # Learned interests synced by the client model:
+      # { tags: [[name, w 0..1], ...], categories: [[name, w 0..1], ...] }
+      def self.interest_profile(user)
+        return { tags: [], categories: [] } unless user
+        Util.interest_profile(user)
+      rescue StandardError
+        { tags: [], categories: [] }
+      end
+
+      # Coin-engine social graph: user ids this user follows (cached 5 min).
+      def self.followed_ids(user)
+        return [] unless user
+        ::Discourse.cache.fetch("rr_geo_followed_v1_#{user.id}", expires_in: 5.minutes) do
+          if defined?(::DiscourseCoinEngine::Follow)
+            ::DiscourseCoinEngine::Follow.where(follower_id: user.id)
+              .limit(500).pluck(:following_id).map(&:to_i)
+          else
+            []
+          end
+        end || []
+      rescue StandardError
+        []
+      end
+
+      # Bounded topic_id => net-vote map (coin-engine post votes, 60s cache).
+      def self.votes_map
+        Util.votes_map
       end
     end
 
@@ -417,6 +513,15 @@ after_initialize do
           terms << "#{w_aff} * (CASE WHEN topics.category_id IN (#{aff_ids.join(',')}) THEN 1 ELSE 0 END)" if aff_ids.present?
         end
 
+        # v0.13 Social: topics authored by people the user follows
+        # (coin-engine graph) — the shorts rail's strongest signal, now
+        # unified into the forum feed. Pure integer CASE, no extra join.
+        w_social = u.f(:rr_geo_weight_social, 2)
+        if w_social > 0 && boosts[:followed].present?
+          fids = boosts[:followed].first(200).map(&:to_i).join(',')
+          terms << "#{w_social} * (CASE WHEN topics.user_id IN (#{fids}) THEN 1 ELSE 0 END)"
+        end
+
         # Engagement: log-damped votes + likes + replies + views.
         use_votes = votes_available?
         w_eng = u.f(:rr_geo_weight_engagement, 2)
@@ -507,32 +612,9 @@ after_initialize do
         []
       end
 
-      # v0.10: weighted profile — entries normalize to [name, weight 0..1].
-      # Accepts v0.5 plain-name arrays, "name|w" strings, pairs, and hashes.
+      # v0.13: normalization now lives in Util (exposed via SignalHub).
       def interest_profile(user)
-        raw = (user.custom_fields['rr_interest_profile'] rescue nil)
-        return { tags: [], categories: [] } if raw.blank?
-        h = (JSON.parse(raw) rescue {})
-        norm = lambda do |arr|
-          Array(arr).map do |e|
-            if e.is_a?(Array)
-              [e[0].to_s, (e[1] || 1).to_f]
-            elsif e.is_a?(Hash)
-              [(e['name'] || e[:name]).to_s, (e['w'] || e[:w] || 1).to_f]
-            else
-              s = e.to_s
-              if s.include?('|')
-                n, w = s.split('|', 2)
-                [n, w.to_f]
-              else
-                [s, 1.0]
-              end
-            end
-          end.reject { |n, _| n.blank? }.first(25)
-        end
-        { tags: norm.call(h['tags']), categories: norm.call(h['categories']) }
-      rescue
-        { tags: [], categories: [] }
+        ::RrGeo::Util.interest_profile(user)
       end
     end
   end

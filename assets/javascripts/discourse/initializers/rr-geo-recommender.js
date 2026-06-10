@@ -2,7 +2,9 @@ import { ajax } from "discourse/lib/ajax";
 import { withPluginApi } from "discourse/lib/plugin-api";
 
 // ============================================================================
-// rr-geo-recommender  (v0.6.1)
+// rr-geo-recommender  (v0.7.0 — adds window.rrRec, the public client hub:
+// score()/learn()/geoTokens()/events() so every surface — shorts rail, FAB
+// hub, theme widgets — ranks with this ONE model instead of private copies.)
 // A tiny ONLINE LOGISTIC-REGRESSION recommender that runs entirely in the
 // browser, side-by-side with the user. No libraries, no server training.
 //
@@ -475,6 +477,29 @@ export default {
       if (!cu && !anonOk) { return; }   // anon mode: learn + re-rank locally, never sync
       canSync = !!cu;
       window.__rrRecActive = true;  // theme learn-bridges defer to this model
+
+      // ---- v0.7.0 PUBLIC CLIENT HUB ----------------------------------
+      // One user model, many surfaces. Theme widgets (shorts rail, FAB hub,
+      // related-topics, trending ticker) should score and teach through THIS
+      // instead of keeping private metric systems. Features use the same
+      // vocabulary the model already learns: "tag:x", "cat:x", "author:x",
+      // "skill:x", "geo:local", "rec:today", "media:img".
+      window.rrRec = {
+        version: 7,
+        active: true,
+        // sigmoid score 0..1 for a sparse feature list
+        score(feats) {
+          try { return score(loadModel(), feats || []); } catch (e) { return 0.5; }
+        },
+        // one SGD step: label 1 = liked it, 0 = didn't; mult scales the step
+        learn(feats, label, mult) {
+          try { learn(feats || [], label ? 1 : 0, mult || 1); } catch (e) {}
+        },
+        // current geo tokens (same source the server ranks with)
+        geoTokens() { return geoTokens(); },
+        // how trained the model is (event count) — callers can gate on this
+        events() { try { return loadModel().n || 0; } catch (e) { return 0; } },
+      };
 
       wireInteractions();
       seedPrior();

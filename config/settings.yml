@@ -39,6 +39,11 @@ plugins:
     default: 1
     min: 0
     max: 100
+  # ===== v0.13.0 hub: social signal — topics by followed authors (coin-engine graph) =====
+  rr_geo_weight_social:
+    default: 2
+    min: 0
+    max: 100
 
   # ===== v0.7.0 fresh-post lottery: a RECENT topic gets a slight random chance
   # to surface near the TOP of the feed (discovery for brand-new content). =====
@@ -102,3 +107,22 @@ plugins:
   # -- intentionally OFF until explicitly enabled.
   rr_geo_auto_tag_cities:
     default: false
+
+  # ===== v0.12 graded-geo tunables (were code defaults; now exposed) =====
+  # Geo matching window — local content is evergreen, so much wider than the
+  # rank horizon.
+  rr_geo_match_horizon_days:
+    default: 1095
+    min: 60
+    max: 3650
+  # Guaranteed local representation: top-N geo-matched topics woven into the
+  # first feed page when they don't surface on score alone. 0 disables.
+  rr_geo_local_floor:
+    default: 4
+    min: 0
+    max: 12
+
+  # ===== v0.13.0 opt-in device-GPS location button (ipinfo stays default) =====
+  rr_geo_gps_button_enabled:
+    default: true
+    client: true
