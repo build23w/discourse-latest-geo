@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Location-aware relevance feed (geo + content affinity + engagement + freshness) with a click-to-edit location widget. Location is auto-detected via ipinfo.io.
-# version: 0.14.0
+# version: 0.14.1
 
 # v0.10.0 perf refactor:
 #   * NO per-row string matching in the feed query. Geo + learned-interest
@@ -51,6 +51,12 @@
 #     ranking) instead of a 50-city static list.
 #   * Privacy unchanged: mesh uses locality centroids only; user coordinates
 #     are never stored.
+#   * v0.14.1 BAR REDESIGN: rr-geo-bar engagement surface. One-click
+#     "Use my location" GPS button lives IN the collapsed bar (no editor
+#     hop), pulsing-pin unset CTA, success flash, card-style editor with
+#     GPS-first layout, full mobile (<=600px) breakpoint, reduced-motion
+#     support. Bar visuals are now fully plugin-owned (root class renamed
+#     from rr-geo-feed-label to rr-geo-bar; old theme banner CSS is inert).
 
 enabled_site_setting :rr_geo_enabled
 

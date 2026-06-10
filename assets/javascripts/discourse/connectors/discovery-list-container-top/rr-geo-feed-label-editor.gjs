@@ -48,6 +48,10 @@ function writeRecents(loc) {
 // geocoded (BigDataCloud's free client endpoint, no key) down to the same
 // "City, Province/State, Country" string the manual path saves. ipinfo
 // auto-detection is unchanged and remains the zero-friction default.
+//
+// v0.14.1: the GPS button is promoted INTO the collapsed bar — one click
+// from the feed, no need to open the editor first. The bar itself is a
+// redesigned engagement surface (rr-geo-bar) fully styled by this plugin.
 const REVERSE_GEOCODE_URL =
   "https://api.bigdatacloud.net/data/reverse-geocode-client";
 
@@ -59,6 +63,7 @@ export default class RrGeoFeedLabelEditor extends Component {
   @tracked editing = false;
   @tracked saving = false;
   @tracked locating = false;
+  @tracked justSaved = false;
   @tracked inputValue = "";
   @tracked suggestions = [];
   @tracked errorMessage = null;
@@ -70,21 +75,48 @@ export default class RrGeoFeedLabelEditor extends Component {
   // reactivity -- this override is the canonical source the template reads.
   @tracked _locationOverride = null;
 
+  _flashTimer = null;
+
   get recentLocations() { return readRecents(); }
   get currentLocation() {
     if (this._locationOverride !== null) return this._locationOverride;
     return this.currentUser?.location || "";
   }
 
+  get gpsAvailable() {
+    return (
+      typeof navigator !== "undefined" &&
+      !!navigator.geolocation &&
+      this.siteSettings?.rr_geo_gps_button_enabled !== false
+    );
+  }
+
+  // Short display form for the collapsed bar: "Orangeville, Ontario" (the
+  // country is implied and eats space on mobile).
+  get shortLocation() {
+    const parts = this.currentLocation.split(",").map((p) => p.trim()).filter(Boolean);
+    return parts.slice(0, 2).join(", ");
+  }
+
+  _flashSaved() {
+    this.justSaved = true;
+    if (this._flashTimer) clearTimeout(this._flashTimer);
+    this._flashTimer = setTimeout(() => { this.justSaved = false; }, 3500);
+  }
+
+  _requireLogin() {
+    if (this.currentUser) return false;
+    window.location.href =
+      "/login?return_path=" + encodeURIComponent(location.pathname + location.search);
+    return true;
+  }
+
   @action
   startEditing(event) {
     if (event) event.stopPropagation();
-    if (!this.currentUser) {
-      window.location.href =
-        "/login?return_path=" + encodeURIComponent(location.pathname + location.search);
-      return;
-    }
+    if (this._requireLogin()) return;
     this.editing = true;
+    this.justSaved = false;
     this.inputValue = this.currentLocation;
     this.errorMessage = null;
     this.suggestions = [];
@@ -164,6 +196,7 @@ export default class RrGeoFeedLabelEditor extends Component {
       writeRecents(newLoc);
       this.editing = false;
       this.suggestions = [];
+      if (newLoc) this._flashSaved();
 
       // Notify the geo initializer so it re-tokenizes localStorage tokens
       // (used by feed prioritization on the next route load).
@@ -187,20 +220,16 @@ export default class RrGeoFeedLabelEditor extends Component {
     }
   }
 
-  get gpsAvailable() {
-    return (
-      typeof navigator !== "undefined" &&
-      !!navigator.geolocation &&
-      this.siteSettings?.rr_geo_gps_button_enabled !== false
-    );
-  }
-
+  // v0.14.1: callable from the COLLAPSED bar (one click) or from the editor.
+  // Collapsed-bar errors open the editor with the message so the user can
+  // fall back to typing without hunting for the input.
   @action
   async useDeviceLocation(event) {
     if (event) event.stopPropagation();
     if (this.locating) return;
+    if (this._requireLogin()) return;
     if (!this.gpsAvailable) {
-      this.errorMessage = "Your browser doesn't support device location — type your city instead.";
+      this._gpsError("Your browser doesn't support device location — type your city instead.");
       return;
     }
     this.locating = true;
@@ -223,20 +252,34 @@ export default class RrGeoFeedLabelEditor extends Component {
       const region = (j.principalSubdivision || "").trim();
       const country = (j.countryName || "").trim();
       if (!city || !region || !country) {
-        this.errorMessage =
-          "Couldn't resolve a town/city from your device location — try typing it instead.";
+        this._gpsError("Couldn't resolve a town/city from your device location — try typing it instead.");
         return;
       }
       this.inputValue = `${city}, ${region}, ${country}`;
       this.suggestions = [];
       await this.save(null);
     } catch (e) {
-      this.errorMessage =
+      this._gpsError(
         e && e.code === 1
           ? "Location permission was declined — no problem, you can type your city instead."
-          : "Couldn't get your device location — try typing your city instead.";
+          : "Couldn't get your device location — try typing your city instead."
+      );
     } finally {
       this.locating = false;
+    }
+  }
+
+  _gpsError(msg) {
+    this.errorMessage = msg;
+    if (!this.editing) {
+      // surface the fallback path immediately
+      this.editing = true;
+      this.inputValue = this.currentLocation;
+      this.suggestions = [];
+      setTimeout(() => {
+        const inp = document.querySelector(".rr-geo-edit__input");
+        if (inp) inp.focus();
+      }, 30);
     }
   }
 
@@ -249,94 +292,120 @@ export default class RrGeoFeedLabelEditor extends Component {
 
   <template>
     {{#unless this.currentUser}}
-      <div class="rr-geo-feed-label is-guest" role="note" aria-live="polite">
-        <span class="rr-geo-feed-label__icon">📍</span>
-        <a href="/login">Log in</a>
+      <div class="rr-geo-bar is-guest" role="note" aria-live="polite">
+        <span class="rr-geo-bar__pin" aria-hidden="true">📍</span>
+        <span class="rr-geo-bar__text">
+          <a href="/login">Log in</a> to get a feed built for <strong>your area</strong>
+        </span>
       </div>
     {{else if this.editing}}
-      <div class="rr-geo-feed-label is-editing" role="dialog" aria-label="Edit your location">
-        <span class="rr-geo-feed-label__icon">📍</span>
+      <div class="rr-geo-bar is-editing" role="dialog" aria-label="Edit your location">
         <div class="rr-geo-edit">
-          <input class="rr-geo-edit__input"
-                 type="text"
-                 value={{this.inputValue}}
-                 placeholder="e.g. Toronto, Ontario, Canada"
-                 maxlength="200"
-                 {{on "input" this.inputChanged}} />
-          <button class="rr-geo-edit__save"
-                  type="button"
-                  disabled={{this.saving}}
-                  {{on "click" this.save}}>
-            {{if this.saving "Saving..." "Save"}}
-          </button>
-          <button class="rr-geo-edit__cancel"
-                  type="button"
-                  {{on "click" this.cancelEditing}}>
-            Cancel
-          </button>
-        </div>
-
-        {{#if this.suggestions.length}}
-          <ul class="rr-geo-edit__suggestions" role="listbox">
-            {{#each this.suggestions as |s|}}
-              <li>
-                <button class="rr-geo-edit__suggestion" type="button" {{on "click" (fn this.pickSuggestion s)}}>
-                  📍 {{s}}
-                </button>
-              </li>
-            {{/each}}
-          </ul>
-        {{/if}}
-
-        {{#if this.recentLocations.length}}
-          <div class="rr-geo-edit__recents">
-            <span class="rr-geo-edit__recents-label">Recent:</span>
-            {{#each this.recentLocations as |r|}}
-              <button class="rr-geo-edit__recent-chip" type="button" {{on "click" (fn this.pickRecent r)}}>
-                {{r}}
-              </button>
-            {{/each}}
+          <div class="rr-geo-edit__head">
+            <span class="rr-geo-bar__pin" aria-hidden="true">📍</span>
+            <span class="rr-geo-edit__title">Where should your local feed point?</span>
           </div>
-        {{/if}}
 
-        {{#if this.gpsAvailable}}
-          <div class="rr-geo-edit__gps">
+          {{#if this.gpsAvailable}}
             <button class="rr-geo-edit__gps-btn"
                     type="button"
                     disabled={{this.locating}}
                     {{on "click" this.useDeviceLocation}}>
               {{if this.locating "Locating…" "📡 Use my device location"}}
             </button>
-            <span class="rr-geo-edit__gps-hint">
-              Optional — your browser will ask once; we only keep "City, Province, Country", never coordinates.
-            </span>
-          </div>
-        {{/if}}
-
-        {{#if this.errorMessage}}
-          <div class="rr-geo-edit__error" role="alert">{{this.errorMessage}}</div>
-        {{/if}}
-
-        <div class="rr-geo-edit__footer">
-          {{#if this.currentLocation}}
-            <button class="rr-geo-edit__clear" type="button" {{on "click" this.clearLocation}}>
-              Clear my location
-            </button>
+            <div class="rr-geo-edit__divider"><span>or type it</span></div>
           {{/if}}
+
+          <div class="rr-geo-edit__row">
+            <input class="rr-geo-edit__input"
+                   type="text"
+                   value={{this.inputValue}}
+                   placeholder="e.g. Toronto, Ontario, Canada"
+                   maxlength="200"
+                   {{on "input" this.inputChanged}} />
+            <button class="rr-geo-edit__save"
+                    type="button"
+                    disabled={{this.saving}}
+                    {{on "click" this.save}}>
+              {{if this.saving "Saving..." "Save"}}
+            </button>
+            <button class="rr-geo-edit__cancel"
+                    type="button"
+                    {{on "click" this.cancelEditing}}>
+              Cancel
+            </button>
+          </div>
+
+          {{#if this.suggestions.length}}
+            <ul class="rr-geo-edit__suggestions" role="listbox">
+              {{#each this.suggestions as |s|}}
+                <li>
+                  <button class="rr-geo-edit__suggestion" type="button" {{on "click" (fn this.pickSuggestion s)}}>
+                    📍 {{s}}
+                  </button>
+                </li>
+              {{/each}}
+            </ul>
+          {{/if}}
+
+          {{#if this.recentLocations.length}}
+            <div class="rr-geo-edit__recents">
+              <span class="rr-geo-edit__recents-label">Recent:</span>
+              {{#each this.recentLocations as |r|}}
+                <button class="rr-geo-edit__recent-chip" type="button" {{on "click" (fn this.pickRecent r)}}>
+                  {{r}}
+                </button>
+              {{/each}}
+            </div>
+          {{/if}}
+
+          {{#if this.errorMessage}}
+            <div class="rr-geo-edit__error" role="alert">{{this.errorMessage}}</div>
+          {{/if}}
+
+          <div class="rr-geo-edit__footer">
+            <span class="rr-geo-edit__privacy">Only "City, Province, Country" is saved — never coordinates.</span>
+            {{#if this.currentLocation}}
+              <button class="rr-geo-edit__clear" type="button" {{on "click" this.clearLocation}}>
+                Clear my location
+              </button>
+            {{/if}}
+          </div>
         </div>
       </div>
-    {{else if this.currentLocation}}
-      <button class="rr-geo-feed-label is-set" type="button" {{on "click" this.startEditing}} aria-label="Edit your location">
-        <span class="rr-geo-feed-label__icon">📍</span>
-        <span class="rr-geo-feed-label__text">Personalized for <strong>{{this.currentLocation}}</strong></span>
-        <span class="rr-geo-feed-label__edit-hint">Edit ✎</span>
-      </button>
     {{else}}
-      <button class="rr-geo-feed-label is-unset" type="button" {{on "click" this.startEditing}}>
-        <span class="rr-geo-feed-label__icon">📍</span>
-        <span class="rr-geo-feed-label__text">Add your location for a personalized feed</span>
-        <span class="rr-geo-feed-label__edit-hint">Set →</span>
-      </button>
+      <div class="rr-geo-bar {{if this.currentLocation 'is-set' 'is-unset'}}" aria-live="polite">
+        <span class="rr-geo-bar__pin {{unless this.currentLocation 'is-pulsing'}}" aria-hidden="true">📍</span>
+
+        {{#if this.justSaved}}
+          <span class="rr-geo-bar__text is-flash">
+            ✓ Feed tuned for <strong>{{this.shortLocation}}</strong> — local posts incoming
+          </span>
+        {{else if this.currentLocation}}
+          <button class="rr-geo-bar__text is-link" type="button" {{on "click" this.startEditing}}>
+            Local feed: <strong>{{this.shortLocation}}</strong>
+          </button>
+        {{else}}
+          <span class="rr-geo-bar__text">
+            Renos, pros &amp; advice from <strong>your area</strong> — set your location
+          </span>
+        {{/if}}
+
+        <span class="rr-geo-bar__actions">
+          {{#if this.gpsAvailable}}
+            <button class="rr-geo-bar__gps"
+                    type="button"
+                    disabled={{this.locating}}
+                    title="Use my device location"
+                    {{on "click" this.useDeviceLocation}}>
+              {{if this.locating "Locating…" (if this.currentLocation "📡 Update" "📡 Use my location")}}
+            </button>
+          {{/if}}
+          <button class="rr-geo-bar__edit" type="button" {{on "click" this.startEditing}}>
+            {{if this.currentLocation "Edit ✎" "Type it"}}
+          </button>
+        </span>
+      </div>
     {{/unless}}
   </template>
 }

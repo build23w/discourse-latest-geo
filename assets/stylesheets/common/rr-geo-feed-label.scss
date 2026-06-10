@@ -1,212 +1,390 @@
-/* discourse-latest-geo v0.3.0 -- click-to-edit feed label */
+/* discourse-latest-geo v0.14.1 — rr-geo-bar: the local-feed engagement bar.
+   Fully plugin-owned design (the old theme-side .rr-geo-feed-label gradient
+   rules no longer apply — root class changed to .rr-geo-bar on purpose).
+   States: is-guest / is-unset / is-set / is-editing. Mobile ≤600px stacks. */
 
-.rr-geo-feed-label {
-  /* Visual styling (the gradient banner) lives in the theme "common" scss so the
-     two definitions don't fight. This plugin block carries only behaviour + box.
-     NOTE: display:flex / align-items come from the theme banner rule. */
+.rr-geo-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
-  cursor: pointer;
-  transition: background .15s ease, border-color .15s ease, transform .15s ease;
-  user-select: none;
-  text-align: left;
   box-sizing: border-box;
+  margin: 0 0 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--primary-low);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, var(--tertiary-very-low, rgba(0, 136, 204, 0.07)) 0%, var(--primary-very-low) 60%);
+  font-size: 13.5px;
+  line-height: 1.35;
+  color: var(--primary-high);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 
-  &__icon {
-    font-size: 14px;
+  &:hover {
+    border-color: var(--tertiary-medium, var(--tertiary));
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.06);
+  }
+
+  /* ---- pin ---- */
+  &__pin {
+    font-size: 17px;
     line-height: 1;
     flex-shrink: 0;
-  }
-  &__text {
-    flex: 1;
-  }
-  &__edit-hint {
-    margin-left: 6px;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: var(--primary-low);
-    color: var(--primary-medium);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: .3px;
-    opacity: 0;
-    transition: opacity .15s ease;
-  }
 
-  &.is-set,
-  &.is-unset {
-    &:hover, &:focus {
-      background: var(--primary-low);
-      border-color: var(--primary-medium);
-      transform: translateY(-1px);
-      .rr-geo-feed-label__edit-hint { opacity: 1; }
+    &.is-pulsing {
+      animation: rr-geo-pin-pulse 2.2s ease-in-out infinite;
     }
   }
 
-  &.is-guest {
-    cursor: default;
-    a { text-decoration: underline; font-weight: 700; }
-    &:hover { transform: none; background: var(--primary-very-low); }
+  /* ---- message ---- */
+  &__text {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    color: var(--primary-high);
+
+    strong { color: var(--tertiary); }
+
+    &.is-link {
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+      cursor: pointer;
+      color: var(--primary-high);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+
+      &:hover strong { text-decoration: underline; }
+    }
+
+    &.is-flash {
+      color: var(--success);
+      strong { color: var(--success); }
+      animation: rr-geo-flash-in 0.25s ease-out;
+    }
   }
 
-  &.is-editing {
-    cursor: default;
-    flex-direction: column;
-    align-items: stretch;
-    background: var(--secondary);
-    border-color: var(--primary-medium);
-    padding: 14px 14px 12px;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
-    width: 100%;
-    max-width: 560px;
-    transform: none;
+  /* ---- inline actions ---- */
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  &__gps {
+    background: var(--tertiary);
+    color: var(--secondary);
+    border: none;
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 12.5px;
+    font-weight: 700;
+    font-family: inherit;
+    letter-spacing: 0.2px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: filter 0.12s ease, transform 0.12s ease;
+
+    &:hover:not(:disabled) { filter: brightness(1.12); transform: translateY(-1px); }
+    &:active:not(:disabled) { transform: translateY(0); }
+    &:disabled { opacity: 0.65; cursor: wait; }
+  }
+
+  &__edit {
+    background: transparent;
+    color: var(--primary-medium);
+    border: 1px solid var(--primary-low-mid);
+    border-radius: 999px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+
+    &:hover { color: var(--primary); border-color: var(--primary-medium); background: var(--primary-very-low); }
+  }
+
+  /* unset = the conversion state: make it warmer + a touch more prominent */
+  &.is-unset {
+    border-color: var(--tertiary-low, var(--primary-low));
+    background:
+      linear-gradient(135deg, var(--tertiary-very-low, rgba(0, 136, 204, 0.1)) 0%, var(--secondary) 70%);
+  }
+
+  &.is-guest a {
+    color: var(--tertiary);
+    font-weight: 700;
   }
 }
 
-/* ===== inline editor ===== */
+/* ===================== editor card ===================== */
+.rr-geo-bar.is-editing {
+  display: block;
+  padding: 14px 16px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
 .rr-geo-edit {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+  display: block;
   width: 100%;
-  flex-wrap: wrap;
-  margin-top: 4px;
+
+  &__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  &__title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--primary);
+  }
+
+  /* prominent GPS path at the top of the editor */
+  &__gps-btn {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--tertiary);
+    color: var(--secondary);
+    border: none;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13.5px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    transition: filter 0.12s ease;
+
+    &:hover:not(:disabled) { filter: brightness(1.12); }
+    &:disabled { opacity: 0.65; cursor: wait; }
+  }
+
+  &__divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0;
+    color: var(--primary-medium);
+    font-size: 11.5px;
+
+    &::before,
+    &::after {
+      content: "";
+      flex: 1;
+      border-top: 1px solid var(--primary-low);
+    }
+  }
+
+  &__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
 
   &__input {
     flex: 1;
-    min-width: 180px;
-    padding: 7px 10px;
-    border-radius: 6px;
-    border: 1px solid var(--primary-low);
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 8px 12px;
+    border: 1px solid var(--primary-low-mid);
+    border-radius: 8px;
     background: var(--secondary);
     color: var(--primary);
-    font-size: 13.5px;
+    font-size: 13px;
     font-family: inherit;
-    transition: border-color .15s ease, box-shadow .15s ease;
+
     &:focus {
-      outline: 0;
+      outline: none;
       border-color: var(--tertiary);
-      box-shadow: 0 0 0 3px rgba(8, 140, 204, 0.18);
+      box-shadow: 0 0 0 2px var(--tertiary-very-low, rgba(0, 136, 204, 0.15));
     }
   }
+
   &__save,
-  &__cancel,
-  &__clear {
-    border: 0;
-    border-radius: 6px;
-    padding: 7px 14px;
+  &__cancel {
+    border-radius: 8px;
+    padding: 8px 14px;
     font-size: 12.5px;
-    font-weight: 700;
-    cursor: pointer;
+    font-weight: 600;
     font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
   }
   &__save {
-    background: var(--tertiary);
+    background: var(--success, #2e7d32);
     color: var(--secondary);
-    &:hover:not([disabled]) { background: var(--tertiary-hover, #066ea4); }
-    &[disabled] { opacity: 0.6; cursor: not-allowed; }
+    border: none;
+    &:hover:not(:disabled) { filter: brightness(1.1); }
+    &:disabled { opacity: 0.65; cursor: wait; }
   }
   &__cancel {
     background: transparent;
     color: var(--primary-medium);
-    border: 1px solid var(--primary-low);
-    &:hover { background: var(--primary-very-low); color: var(--primary); }
+    border: 1px solid var(--primary-low-mid);
+    &:hover { color: var(--primary); border-color: var(--primary-medium); }
   }
+
   &__suggestions {
     list-style: none;
     margin: 8px 0 0;
-    padding: 0;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    width: 100%;
+    padding: 4px;
+    border: 1px solid var(--primary-low);
+    border-radius: 10px;
+    background: var(--secondary);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+
     li { margin: 0; }
   }
   &__suggestion {
-    display: inline-flex; align-items: center; gap: 4px;
-    background: var(--primary-very-low);
-    border: 1px solid var(--primary-low);
-    color: var(--primary);
-    padding: 5px 10px;
-    border-radius: 999px;
-    font-size: 12px;
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 7px 10px;
+    font-size: 13px;
     font-family: inherit;
+    color: var(--primary-high);
     cursor: pointer;
-    transition: background .12s ease;
-    &:hover { background: var(--tertiary-low, var(--primary-low)); border-color: var(--tertiary); color: var(--tertiary); }
+
+    &:hover { background: var(--tertiary-very-low, var(--primary-very-low)); color: var(--primary); }
   }
+
   &__recents {
-    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-    margin-top: 8px; width: 100%;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
   }
   &__recents-label {
-    font-size: 11px; color: var(--primary-medium); text-transform: uppercase; letter-spacing: .8px; font-weight: 700;
+    color: var(--primary-medium);
+    font-size: 11.5px;
   }
   &__recent-chip {
-    background: transparent;
-    border: 1px dashed var(--primary-low);
-    color: var(--primary-medium);
-    padding: 4px 10px;
+    background: var(--primary-very-low);
+    color: var(--primary-high);
+    border: 1px solid var(--primary-low);
     border-radius: 999px;
+    padding: 4px 11px;
     font-size: 11.5px;
     font-family: inherit;
     cursor: pointer;
-    &:hover { background: var(--primary-very-low); color: var(--primary); border-color: var(--primary-medium); }
+
+    &:hover { background: var(--tertiary-very-low, var(--primary-low)); border-color: var(--tertiary-medium, var(--primary-medium)); }
   }
+
   &__error {
-    margin-top: 6px;
+    margin-top: 8px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: var(--danger-low, rgba(224, 49, 49, 0.08));
     color: var(--danger);
     font-size: 12px;
   }
-  /* v0.13 opt-in device-GPS button */
-  &__gps {
-    margin-top: 8px;
+
+  &__footer {
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: space-between;
+    gap: 10px;
     flex-wrap: wrap;
-    width: 100%;
+    margin-top: 12px;
+    border-top: 1px solid var(--primary-very-low);
+    padding-top: 9px;
   }
-  &__gps-btn {
-    background: var(--primary-very-low);
-    color: var(--primary-high);
-    border: 1px solid var(--primary-low-mid);
-    border-radius: 999px;
-    padding: 4px 12px;
-    font-size: 11.5px;
-    font-weight: 600;
-    font-family: inherit;
-    cursor: pointer;
-    &:hover:not(:disabled) { background: var(--primary-low); border-color: var(--primary-medium); }
-    &:disabled { opacity: .6; cursor: wait; }
-  }
-  &__gps-hint {
+  &__privacy {
     color: var(--primary-medium);
     font-size: 11px;
     flex: 1;
-    min-width: 180px;
-  }
-  &__footer {
-    margin-top: 10px;
-    border-top: 1px solid var(--primary-very-low);
-    padding-top: 8px;
-    width: 100%;
+    min-width: 160px;
   }
   &__clear {
     background: transparent;
     color: var(--danger);
+    border: none;
     padding: 4px 0;
     font-size: 11.5px;
+    font-family: inherit;
     text-decoration: underline;
+    cursor: pointer;
+
     &:hover { color: var(--danger-hover, var(--danger)); }
   }
 }
 
-/* Mobile -- stack the input above buttons on narrow widths */
+/* ===================== animations ===================== */
+@keyframes rr-geo-pin-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.18); }
+}
+@keyframes rr-geo-flash-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rr-geo-bar__pin.is-pulsing { animation: none; }
+  .rr-geo-bar__text.is-flash { animation: none; }
+  .rr-geo-bar__gps { transition: none; }
+}
+
+/* ===================== mobile ≤600px ===================== */
 @media (max-width: 600px) {
+  .rr-geo-bar {
+    flex-wrap: wrap;
+    padding: 10px 12px;
+    gap: 8px;
+
+    &__text {
+      flex: 1 1 calc(100% - 60px);
+      font-size: 13px;
+
+      &.is-link { white-space: normal; }
+    }
+
+    /* actions drop to their own full-width row; big touch targets */
+    &__actions {
+      flex: 1 1 100%;
+      gap: 8px;
+    }
+    &__gps {
+      flex: 1.4;
+      min-height: 42px;
+      font-size: 13px;
+    }
+    &__edit {
+      flex: 1;
+      min-height: 42px;
+      font-size: 12.5px;
+    }
+  }
+
   .rr-geo-edit {
-    flex-direction: column;
-    align-items: stretch;
-    &__input { min-width: 0; }
-    &__save, &__cancel { width: 100%; }
+    &__row {
+      flex-wrap: wrap;
+    }
+    &__input {
+      flex: 1 1 100%;
+      min-height: 42px;
+    }
+    &__save,
+    &__cancel {
+      flex: 1;
+      min-height: 42px;
+    }
+    &__gps-btn {
+      min-height: 46px;
+    }
+    &__footer {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+    }
   }
 }
