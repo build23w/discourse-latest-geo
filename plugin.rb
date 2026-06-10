@@ -226,6 +226,13 @@ after_initialize do
         conn = ActiveRecord::Base.connection
         lim = i(:rr_geo_match_limit, 400).clamp(50, 2000)
         horizon = "bumped_at > (now() - INTERVAL '#{horizon_days.to_i} days')"
+        # v0.12: location content is EVERGREEN -- a Montreal contractor listing is
+        # relevant no matter when it was last bumped. The 60-day rank horizon was
+        # hiding ~90% of local topics (dormant directory/jobs listings) from the geo
+        # booster, so a Montreal user saw ZERO local posts while search found ~500.
+        # Match geo over a much wider window; keep the tight horizon for learned signals.
+        geo_days = i(:rr_geo_match_horizon_days, 1095).clamp(60, 3650)
+        geo_horizon = "bumped_at > (now() - INTERVAL '#{geo_days} days')"
         map = {}
         geo_cats = {}
 
@@ -238,7 +245,7 @@ after_initialize do
           # Titles: bounded scans over the horizon window, once per 5 min.
           conn.select_values(
             "SELECT id FROM topics WHERE deleted_at IS NULL AND visible " \
-            "AND #{horizon} AND title ILIKE ANY (ARRAY[#{pats}]) LIMIT #{lim}"
+            "AND #{geo_horizon} AND title ILIKE ANY (ARRAY[#{pats}]) LIMIT #{lim}"
           ).each do |id|
             cell = (map[id.to_i] ||= [0.0, 0.0])
             cell[0] = [cell[0], weight].max
@@ -252,7 +259,7 @@ after_initialize do
             "JOIN tags tg ON tg.id = tt.tag_id " \
             "JOIN topics t ON t.id = tt.topic_id " \
             "WHERE lower(tg.name) IN (#{qnames}) AND t.deleted_at IS NULL " \
-            "AND t.visible AND t.#{horizon} LIMIT #{lim}"
+            "AND t.visible AND t.#{geo_horizon} LIMIT #{lim}"
           ).each do |id|
             cell = (map[id.to_i] ||= [0.0, 0.0])
             cell[0] = [cell[0], weight].max
@@ -340,10 +347,11 @@ after_initialize do
             # core's page-0 branch slices `[0...limit]` and the page-N branch
             # relies on the relation's limit after replacing the offset.
             if ids.present? && ids.length > offset
+              woven = rr_weave_local(ids, boosts)
               return rel.except(:offset)
-                        .where("topics.id IN (?)", ids)
+                        .where("topics.id IN (?)", woven)
                         .reorder(Arel.sql(
-                          "array_position(ARRAY[#{ids.join(',')}]::int[], topics.id)"
+                          "array_position(ARRAY[#{woven.join(',')}]::int[], topics.id)"
                         ))
             end
             # ids ran short of the requested page => genuinely past the end
@@ -358,6 +366,24 @@ after_initialize do
       end
 
       private
+
+      # v0.12: GUARANTEE local representation. Geo is a soft score term, so when a
+      # user's local content is mostly dormant it never out-scores fresh topics and
+      # they see zero local posts. Splice the top geo-matched topics (highest graded
+      # hit) into early, spread feed slots if they aren't already near the top.
+      def rr_weave_local(ids, boosts)
+        floor = ::RrGeo::Util.i(:rr_geo_local_floor, 4)
+        return ids if floor <= 0
+        geo = (boosts[:map] || {}).select { |_, (g, _)| g.to_f > 0 }
+                                  .sort_by { |_, (g, _)| -g.to_f }.map { |id, _| id.to_i }
+        return ids if geo.blank?
+        present = ids.first(60).to_set
+        inject = geo.reject { |gid| present.include?(gid) }.first(floor)
+        return ids if inject.blank?
+        out = ids.dup
+        inject.each_with_index { |gid, k| out.insert([4 + k * 5, out.length].min, gid) }
+        out.uniq
+      end
 
       def rr_cacheable?(options)
         options[:category].blank? && options[:tags].blank? &&
