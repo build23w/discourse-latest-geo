@@ -561,10 +561,15 @@ after_initialize do
     private
 
     def rr_track_client_ip
-      curr_ip = ::RrGeo::Util.real_ip(request)
-      RequestStore.store[:rr_client_ip] = curr_ip
-      RequestStore.store[:rr_ip_changed] = session[:rr_last_ip].present? && session[:rr_last_ip] != curr_ip
-      session[:rr_last_ip] = curr_ip
+      # REQUEST-SCOPED ONLY — never touch the session. Writing session[:rr_last_ip]
+      # on every request (this is a before_action on ALL controllers, anon included)
+      # forced a Set-Cookie: _forum_session on anonymous GETs, which made Discourse
+      # SKIP its anonymous page cache (x-discourse-cached: skip) and blocked CDN
+      # edge caching site-wide — the dominant anon-TTFB cost. ip_changed only ever
+      # fed the geo hard-reload, which was removed (now a soft no-op), so no
+      # cross-request change detection is needed. RequestStore is per-request,
+      # cookie-free, and safe for cached responses.
+      RequestStore.store[:rr_client_ip] = ::RrGeo::Util.real_ip(request)
     end
   end
 
