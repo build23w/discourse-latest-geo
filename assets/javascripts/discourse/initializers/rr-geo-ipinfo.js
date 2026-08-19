@@ -12,14 +12,22 @@ const GEO_POLL_INTERVAL_MS = 0; // set >0 to enable periodic checks
 const GEO_RELOAD_MIN_INTERVAL_MS = 60 * 1000; // 60s
 
 const IPINFO_URL = "https://ipinfo.io/json";
+// v0.15: the platform's own geolocation. On a Cloudflare-powered forum the
+// edge answers this from request.cf (the fronting Worker replies without even
+// waking Rails; a plain CF-proxied install serves it from the plugin reading
+// the visitor-location headers). Same-origin, free, instant, and immune to
+// the ad-blockers that eat ipinfo.io — so it is the default source, with
+// ipinfo as the fallback wherever the platform can't answer.
+const DETECT_URL = "/rr-geo/detect.json";
 
 // v0.11: profile locations are structured "City, Province/State, Country".
-// ipinfo returns ISO country codes; map the common ones, fall back to code.
+// Both sources return ISO country codes; map the common ones, fall back to code.
 const COUNTRY_NAMES = {
   CA: "Canada", US: "United States", GB: "United Kingdom", AU: "Australia",
   NZ: "New Zealand", IE: "Ireland", IN: "India", FR: "France", DE: "Germany",
 };
 let IPINFO_TOKEN = ""; // set from site settings at init (free tokens lift the anon limit)
+let GEO_SOURCE = "auto"; // rr_geo_source: auto | cloudflare | ipinfo
 
 function nowMs() {
   return Date.now ? Date.now() : new Date().getTime();
@@ -118,22 +126,58 @@ async function fetchIpinfo() {
   return res.json();
 }
 
-async function updateProfileLocation(
-  api,
-  { city, region, country, onlyIfBlank = true }
-) {
+async function fetchCloudflareGeo() {
+  const res = await fetch(DETECT_URL, {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`geo detect ${res.status}`);
+  }
+  const j = await res.json();
+  if (!j || j.ok !== true) {
+    throw new Error("geo detect: platform has no edge geolocation");
+  }
+  // { ok, source, ip (masked /24), city, region, region_code, country, timezone, postal }
+  return j;
+}
+
+// Resolve { ip, city, region, country } from the configured source.
+// "auto" (default): cloudflare first — SET BY THE PLATFORM whenever the forum
+// runs behind Cloudflare — with ipinfo as the fallback; "cloudflare"/"ipinfo"
+// pin one source.
+async function resolveGeo() {
+  if (GEO_SOURCE !== "ipinfo") {
+    try {
+      const j = await fetchCloudflareGeo();
+      if ((j.city && j.region && j.country) || GEO_SOURCE === "cloudflare") {
+        return { ip: j.ip, city: j.city, region: j.region, country: j.country };
+      }
+      // partial edge data in auto mode: let ipinfo try for the full triple
+    } catch (e) {
+      if (GEO_SOURCE === "cloudflare") {
+        throw e;
+      }
+    }
+  }
+  const j = await fetchIpinfo();
+  return { ip: j?.ip, city: j?.city, region: j?.region, country: j?.country };
+}
+
+async function updateProfileLocation(api, { city, region, country }) {
   const currentUser = api.getCurrentUser?.();
   if (!currentUser) {
     return;
   }
   // v0.11.2: a profile location stuck on a stale/wrong value (e.g. an old
   // VPN session left "New York" while the user is really in Ontario) used to
-  // be permanent because we only wrote when blank. Now we ALSO self-correct,
+  // be permanent because we only wrote when blank. We ALSO self-correct,
   // but ONLY a location WE previously auto-set (tracked via GEO_AUTOSET_KEY) —
-  // a value the user typed manually is never overwritten.
+  // a value the user typed manually is never overwritten. (v0.15 makes this
+  // guard unconditional: the old onlyIfBlank:false call path skipped it and
+  // silently clobbered hand-typed locations with IP geo.)
   const existing = (currentUser.location || "").trim();
   const wasAutoSet = (() => { try { return localStorage.getItem(GEO_AUTOSET_KEY) === existing; } catch { return false; } })();
-  if (onlyIfBlank && existing && !wasAutoSet) {
+  if (existing && !wasAutoSet) {
     return; // manual / unknown-origin value: leave it alone
   }
 
@@ -166,11 +210,8 @@ function setDefaultTokensIfMissing() {
   localStorage.setItem(GEO_TOKENS_KEY, "toronto,gta,ontario,canada");
 }
 
-async function bootstrapFromIpinfo(api, { persistIp }) {
-  const j = await fetchIpinfo();
-  const city = j?.city;
-  const region = j?.region;
-  const country = j?.country;
+async function bootstrapGeo(api, { persistIp }) {
+  const { ip, city, region, country } = await resolveGeo();
 
   const countryName = COUNTRY_NAMES[country] || country;
   const toks = tokenizePieces(city, region, countryName, country).filter(Boolean);
@@ -180,10 +221,14 @@ async function bootstrapFromIpinfo(api, { persistIp }) {
     localStorage.setItem(GEO_TOKENS_KEY, csv);
     dispatchGeoUpdated();
   }
-  await updateProfileLocation(api, { city, region, country: countryName, onlyIfBlank: false });
+  await updateProfileLocation(api, { city, region, country: countryName });
 
-  if (persistIp) {
-    localStorage.setItem(GEO_LAST_IP_KEY, persistIp || j?.ip || "");
+  // v0.15: persist whichever ip we know. The detect endpoint hands EVERY
+  // visitor their (masked) ip — the old path only ever had one via the
+  // staff-gated serializer — so the network-change check works for everyone.
+  const knownIp = persistIp || ip || "";
+  if (knownIp) {
+    localStorage.setItem(GEO_LAST_IP_KEY, knownIp);
   }
 }
 
@@ -202,7 +247,7 @@ async function refreshGeoIfNeeded(api, { force = false } = {}) {
   const needsBootstrap = !hasProfileLocation(api);
   if (needsBootstrap || ipChanged || firstRun || force) {
     try {
-      await bootstrapFromIpinfo(api, { persistIp: sessionIp });
+      await bootstrapGeo(api, { persistIp: sessionIp });
       // 2026-06-08: NEVER hard-reload. Behind Cloudflare/HAProxy the per-request
       // client_ip legitimately varies (different edge), so ipChanged was
       // chronically true and window.location.reload() fired on nearly every
@@ -235,6 +280,7 @@ export default {
         return;
       }
       IPINFO_TOKEN = (ss.rr_geo_ipinfo_token || "").trim();
+      GEO_SOURCE = (ss.rr_geo_source || "auto").toLowerCase().trim();
       await refreshGeoIfNeeded(api);
 
       document.addEventListener("visibilitychange", () => {

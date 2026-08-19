@@ -70,6 +70,28 @@ module RrGeo
       render json: { ok: true, tags: profile['tags'], categories: profile['categories'] }
     end
 
+    # GET /rr-geo/detect.json
+    # v0.15: server-derived geolocation — zero third-party calls. On the
+    # Cloudflare-powered forum the fronting Worker answers this path at the
+    # edge (request.cf) before Rails is even reached; this implementation is
+    # the same contract for plain CF-proxied installs, reading the
+    # visitor-location headers. Not behind Cloudflare -> { ok: false } and the
+    # client falls back to ipinfo.io. Anonymous-safe: request-scoped, never
+    # touches the session (the Set-Cookie lesson from IpTracking), and
+    # explicitly uncacheable — this is per-visitor data.
+    def detect
+      raise Discourse::NotFound unless SiteSetting.rr_geo_enabled
+
+      response.headers['Cache-Control'] = 'private, no-store'
+      geo = ::RrGeo::Util.cf_geo(request)
+      ip  = ::RrGeo::Util.mask_ip(::RrGeo::Util.real_ip(request))
+      if geo.present? && (geo[:city] || geo[:country])
+        render json: { ok: true, source: 'cloudflare', ip: ip }.merge(geo)
+      else
+        render json: { ok: false, source: nil, ip: ip }
+      end
+    end
+
     # GET /rr-geo/prior.json?tokens=orangeville,ontario
     # v0.10 cold-start prior: top tags among recent geo-matching topics.
     # Anon-safe (no per-user state, cached 1h per token set) — used to seed

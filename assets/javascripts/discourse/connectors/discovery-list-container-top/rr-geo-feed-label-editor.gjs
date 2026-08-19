@@ -46,8 +46,9 @@ function writeRecents(loc) {
 // v0.13: opt-in device-GPS path. The browser's own permission prompt is the
 // consent gate; we never store coordinates — they're immediately reverse-
 // geocoded (BigDataCloud's free client endpoint, no key) down to the same
-// "City, Province/State, Country" string the manual path saves. ipinfo
-// auto-detection is unchanged and remains the zero-friction default.
+// "City, Province/State, Country" string the manual path saves. IP
+// auto-detection (v0.15: Cloudflare edge first, ipinfo fallback) is unchanged
+// and remains the zero-friction default.
 //
 // v0.14.1: the GPS button is promoted INTO the collapsed bar — one click
 // from the feed, no need to open the editor first. The bar itself is a

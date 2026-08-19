@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
-# about: Location-aware relevance feed (geo + content affinity + engagement + freshness) with a click-to-edit location widget. Location is auto-detected via ipinfo.io.
-# version: 0.14.1
+# about: Location-aware relevance feed (geo + content affinity + engagement + freshness) with a click-to-edit location widget. Location is auto-detected from the platform's Cloudflare edge geolocation, falling back to ipinfo.io.
+# version: 0.15.0
 
 # v0.10.0 perf refactor:
 #   * NO per-row string matching in the feed query. Geo + learned-interest
@@ -58,6 +58,23 @@
 #     support. Bar visuals are now fully plugin-owned (root class renamed
 #     from rr-geo-feed-label to rr-geo-bar; old theme banner CSS is inert).
 
+# v0.15.0 cloudflare-first geolocation:
+#   * The platform is a geo source now: GET /rr-geo/detect.json returns the
+#     visitor's location read from Cloudflare's visitor-location headers
+#     (CF-IPCity / CF-Region / CF-IPCountry / ... — set by the fronting
+#     Worker from request.cf, or by the zone's "Add visitor location headers"
+#     managed transform on any CF-proxied install). rr_geo_source picks the
+#     policy: auto (default — cloudflare when the platform answers, ipinfo.io
+#     otherwise), cloudflare, ipinfo.
+#   * The client bootstraps from the edge by default: no third-party call, no
+#     ad-block breakage, no ipinfo quota — and the masked client ip is set for
+#     EVERY visitor (ipinfo's echo only ever fed lastIp via the staff-gated
+#     serializer), so network-change detection finally works for everyone.
+#   * Manual profile locations are never clobbered: the v0.11.2 self-correct
+#     guard was skippable (onlyIfBlank:false — the only call site) and silently
+#     overwrote hand-typed locations with IP geo; it now only ever rewrites a
+#     value it auto-set itself.
+
 enabled_site_setting :rr_geo_enabled
 
 register_asset "stylesheets/common/rr-geo-feed-label.scss"
@@ -82,6 +99,7 @@ after_initialize do
     get '/rr-geo/suggestions.json' => 'rr_geo/locations#suggestions'
     put '/rr-geo/interests.json'   => 'rr_geo/locations#update_interests'
     get '/rr-geo/prior.json'       => 'rr_geo/locations#prior'
+    get '/rr-geo/detect.json'      => 'rr_geo/locations#detect'
   end
 
   module ::RrGeo
@@ -241,6 +259,39 @@ after_initialize do
           "#{parts[0, 4].join(":")}::"
         end
       rescue IPAddr::InvalidAddressError
+        nil
+      end
+
+      # ---- v0.15: Cloudflare edge geolocation ------------------------------
+      # On a Cloudflare-powered platform every request already carries the
+      # visitor's location, resolved at the edge: the fronting Worker sets
+      # these headers from request.cf (and any plain CF-proxied install gets
+      # the same names from the "Add visitor location headers" managed
+      # transform). Reading them is free, instant, needs no third-party quota
+      # and cannot be ad-blocked. Best-effort geo, never a security input.
+      # Non-ASCII values (Montréal) arrive percent-encoded by convention.
+      CF_GEO_HEADERS = {
+        city:        'HTTP_CF_IPCITY',
+        region:      'HTTP_CF_REGION',
+        region_code: 'HTTP_CF_REGION_CODE',
+        country:     'HTTP_CF_IPCOUNTRY',
+        timezone:    'HTTP_CF_TIMEZONE',
+        postal:      'HTTP_CF_POSTAL_CODE',
+      }.freeze
+
+      def self.cf_geo(request)
+        out = {}
+        CF_GEO_HEADERS.each do |key, header|
+          v = request.get_header(header).to_s.dup.force_encoding(Encoding::UTF_8)
+          next unless v.valid_encoding?
+          v = (URI.decode_www_form_component(v) rescue v) if v.include?('%')
+          v = v.strip
+          out[key] = v if v.present? && v.length <= 100
+        end
+        # XX = Cloudflare could not resolve a country; T1 = a Tor exit node.
+        out.delete(:country) if %w[XX T1].include?(out[:country])
+        out.presence
+      rescue StandardError
         nil
       end
 

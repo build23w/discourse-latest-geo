@@ -2,6 +2,18 @@ plugins:
   rr_geo_enabled:
     default: true
     client: true
+  # ===== v0.15.0 geolocation source =====
+  # auto: the platform's edge geolocation when it answers (/rr-geo/detect.json,
+  # backed by Cloudflare's visitor-location data), falling back to ipinfo.io.
+  # cloudflare: edge only, never call ipinfo. ipinfo: the pre-0.15 behavior.
+  rr_geo_source:
+    default: auto
+    type: enum
+    choices:
+      - auto
+      - cloudflare
+      - ipinfo
+    client: true
   rr_geo_ipinfo_token:
     default: ""
     client: true
