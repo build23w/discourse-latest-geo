@@ -148,3 +148,18 @@ plugins:
   rr_geo_gps_button_enabled:
     default: true
     client: true
+
+  # ===== v0.16.0 anonymous front-door ranking =====
+  # Logged-out visitors get a quality-ordered feed (engagement, freshness,
+  # velocity, answered bonus, home-market geo prior) instead of plain bumped
+  # order. One shared ranked window per seed bucket; no per-visitor state.
+  rr_geo_anon_rank_enabled:
+    default: true
+  # Graded geo prior for anonymous visitors, same shape as a member location.
+  rr_geo_anon_home_location:
+    default: "Toronto, Ontario, Canada"
+  # Bonus for topics that have at least one reply (0 disables).
+  rr_geo_anon_weight_answered:
+    default: 2
+    min: 0
+    max: 100
