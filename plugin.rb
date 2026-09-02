@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 # name: discourse-latest-geo
 # about: Location-aware relevance feed (geo + content affinity + engagement + freshness) with a click-to-edit location widget. Location is auto-detected from the platform's Cloudflare edge geolocation, falling back to ipinfo.io.
-# version: 0.15.0
+# version: 0.16.0
 
 # v0.10.0 perf refactor:
 #   * NO per-row string matching in the feed query. Geo + learned-interest
@@ -74,6 +74,21 @@
 #     guard was skippable (onlyIfBlank:false — the only call site) and silently
 #     overwrote hand-typed locations with IP geo; it now only ever rewrites a
 #     value it auto-set itself.
+
+# v0.16.0 anonymous front-door ranking:
+#   * The ranked feed used to be logged-in ONLY (`return rel unless user`), so
+#     the ~99% of visitors who arrive logged out — the whole Google audience —
+#     saw plain bumped order: whatever bot or mirror posted last. Anonymous
+#     visitors now get a quality-ordered feed: engagement + freshness +
+#     velocity + an "answered" bonus + the home-market geo prior
+#     (rr_geo_anon_home_location, graded like a member's location) + the same
+#     seed-bucket jitter and fresh-post lottery members get. No per-visitor
+#     state, no user signals: ONE ranked id window per seed bucket, cached in
+#     Redis and shared by every anonymous request, so the feed is identical
+#     for everyone (edge-cacheable) and costs one query per bucket. Falls back
+#     to bumped order on any error, on filtered lists, and past the window.
+#     Settings: rr_geo_anon_rank_enabled, rr_geo_anon_home_location,
+#     rr_geo_anon_weight_answered.
 
 enabled_site_setting :rr_geo_enabled
 
@@ -511,7 +526,7 @@ after_initialize do
         return rel unless SiteSetting.rr_geo_enabled
         return rel if options[:order].present?
         user = @guardian&.user
-        return rel unless user
+        return rr_anon_results(rel, options) unless user
 
         u = ::RrGeo::Util
         horizon = u.i(:rr_geo_rank_horizon_days, 60).clamp(1, 3650)
@@ -568,6 +583,133 @@ after_initialize do
       end
 
       private
+
+      # ---- v0.16.0 anonymous front door ---------------------------------------
+      # One shared ranked window per seed bucket. Reuses the member scorer's
+      # engagement / freshness / velocity / explore / fresh-lottery terms and
+      # the graded geo prior for the home market; nothing user-specific.
+      def rr_anon_results(rel, options)
+        return rel unless SiteSetting.rr_geo_anon_rank_enabled
+        return rel unless rr_cacheable?(options)
+
+        u = ::RrGeo::Util
+        horizon = u.i(:rr_geo_rank_horizon_days, 60).clamp(1, 3650)
+        bucket_min = [u.i(:rr_geo_seed_bucket_minutes, 25), 5].max
+        bucket = Time.now.to_i / (bucket_min * 60)
+        per_page = (options[:per_page] || SiteSetting.topics_per_page).to_i
+        per_page = 30 if per_page <= 0
+        offset = options[:page].to_i * per_page
+        cache_n = u.i(:rr_geo_cache_topics, 150).clamp(30, 500)
+        return rel if offset + per_page > cache_n
+
+        home = SiteSetting.rr_geo_anon_home_location.to_s.strip
+        key = "rr_geo_anon_feed_v1_#{bucket}_#{horizon}_#{cache_n}_#{Digest::MD5.hexdigest(home)[0, 8]}"
+        ids = ::Discourse.cache.fetch(key, expires_in: bucket_min.minutes) do
+          boosts = rr_anon_boosts(home, horizon, bucket_min)
+          scored = rr_anon_score(rel.except(:limit, :offset), boosts, horizon, bucket)
+          if scored
+            ActiveRecord::Base.connection
+              .select_values("SELECT id FROM (#{scored.limit(cache_n).to_sql}) rr_anon_window")
+              .map(&:to_i)
+          else
+            []
+          end
+        end
+        return rel if ids.blank? || ids.length <= offset
+
+        # Same contract as the member path (v0.11.1): return the whole ordered
+        # window and let core paginate it.
+        rel.except(:offset)
+           .where("topics.id IN (?)", ids)
+           .reorder(Arel.sql("array_position(ARRAY[#{ids.join(',')}]::int[], topics.id)"))
+      rescue => e
+        Rails.logger.warn("[rr_geo] anon feed ranking fell back to default: #{e.class} #{e.message}")
+        rel
+      end
+
+      # Home-market geo prior, graded exactly like a member's own location
+      # (city 1.0 -> nearby -> province -> country). Shared by every anonymous
+      # request, so it is cached once per bucket, not per visitor.
+      def rr_anon_boosts(home, horizon_days, bucket_min)
+        return ::RrGeo::Util.empty_boosts if home.blank?
+        digest = Digest::MD5.hexdigest([home, horizon_days, ::RrGeo::Util.i(:rr_geo_match_limit, 400)].join('|'))[0, 12]
+        ::Discourse.cache.fetch("rr_geo_anon_boost_v1_#{digest}", expires_in: [bucket_min, 5].max.minutes) do
+          ::RrGeo::Util.build_boosts(home, { tags: [], categories: [] }, horizon_days)
+        end || ::RrGeo::Util.empty_boosts
+      rescue StandardError
+        ::RrGeo::Util.empty_boosts
+      end
+
+      def rr_anon_score(rel, boosts, horizon_days, bucket)
+        u = ::RrGeo::Util
+        terms = []
+        has_boost_join = boosts[:map].present?
+
+        w_geo = u.f(:rr_geo_weight_location, 3)
+        if w_geo > 0
+          parts = []
+          parts << "COALESCE(rrb.geo_hit, 0)" if has_boost_join
+          if boosts[:geo_cats].present?
+            whens = boosts[:geo_cats].map { |cid, w| "WHEN #{cid.to_i} THEN #{w.to_f.round(2)}" }.join(' ')
+            parts << "(CASE topics.category_id #{whens} ELSE 0 END)"
+          end
+          terms << "#{w_geo} * GREATEST(#{parts.join(', ')})" if parts.present?
+        end
+
+        use_votes = votes_available?
+        w_eng = u.f(:rr_geo_weight_engagement, 2)
+        vmap = (use_votes && w_eng > 0) ? u.votes_map : {}
+        use_votes = false if vmap.empty?
+        if w_eng > 0
+          vexpr = use_votes ? "3 * COALESCE(pv.vscore, 0)" : "0"
+          terms << "#{w_eng} * ln(1 + GREATEST(0, #{vexpr} + 2 * COALESCE(topics.like_count, 0) + COALESCE(topics.posts_count, 0) + 0.1 * COALESCE(topics.views, 0)))"
+        end
+
+        # Answered: a thread with a reply is a page that shows the forum works.
+        w_ans = u.f(:rr_geo_anon_weight_answered, 2)
+        terms << "#{w_ans} * (CASE WHEN COALESCE(topics.posts_count, 0) >= 2 THEN 1 ELSE 0 END)" if w_ans > 0
+
+        w_fresh = u.f(:rr_geo_weight_freshness, 2)
+        terms << "#{w_fresh} * (1.0 / (1.0 + (EXTRACT(EPOCH FROM (now() - topics.bumped_at)) / 86400.0)))" if w_fresh > 0
+
+        w_vel = u.f(:rr_geo_weight_velocity, 3)
+        if w_vel > 0
+          vwin = u.i(:rr_geo_velocity_window_hours, 8)
+          terms << "#{w_vel} * (CASE WHEN topics.last_posted_at > (now() - INTERVAL '#{vwin} hours') " \
+                   "THEN ln(1 + GREATEST(0, COALESCE(topics.posts_count, 1) - 1)) * (1.0 / (1.0 + (EXTRACT(EPOCH FROM (now() - topics.last_posted_at)) / 3600.0))) ELSE 0 END)"
+        end
+
+        w_explore = u.f(:rr_geo_weight_explore, 1)
+        if w_explore > 0
+          seed = (bucket * 2_654_435_761) % 100_000
+          seed = 1 if seed.zero?
+          terms << "#{w_explore} * (((topics.id::bigint * #{seed}) % 997) / 997.0)"
+        end
+
+        w_fb = u.f(:rr_geo_weight_fresh_boost, 2)
+        if w_fb > 0
+          fwin = u.i(:rr_geo_fresh_boost_window_hours, 48)
+          fchance = u.i(:rr_geo_fresh_boost_chance, 12)
+          fseed = ((bucket + 7) * 40_503) % 100_000
+          fseed = 1 if fseed.zero?
+          terms << "#{w_fb} * (CASE WHEN topics.created_at > (now() - INTERVAL '#{fwin} hours') AND ((topics.id::bigint * #{fseed}) % 100) < #{fchance} THEN 10 ELSE 0 END)"
+        end
+
+        return nil if terms.empty?
+
+        if use_votes && w_eng > 0
+          vals = vmap.map { |tid, sc| "(#{tid.to_i},#{sc.to_i})" }.join(",")
+          rel = rel.joins("LEFT JOIN (VALUES #{vals}) AS pv(topic_id, vscore) ON pv.topic_id = topics.id")
+        end
+        if has_boost_join
+          vals = boosts[:map].map { |tid, (g, lw)| "(#{tid.to_i},#{g.to_f.round(2)},#{lw.to_f.round(2)})" }.join(",")
+          rel = rel.joins("LEFT JOIN (VALUES #{vals}) AS rrb(topic_id, geo_hit, learned_w) ON rrb.topic_id = topics.id")
+        end
+
+        score = "CASE WHEN topics.bumped_at > (now() - INTERVAL '#{horizon_days.to_i} days') THEN (#{terms.join(' + ')}) ELSE 0 END"
+        rel.select("topics.*, (#{score}) AS rr_feed_score")
+           .reorder(Arel.sql("rr_feed_score DESC, topics.bumped_at DESC"))
+      end
 
       # v0.12: GUARANTEE local representation. Geo is a soft score term, so when a
       # user's local content is mostly dormant it never out-scores fresh topics and
