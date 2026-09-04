@@ -9,26 +9,38 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   syntax:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Ruby files must parse
         run: |
           set -e
-          for f in $(git ls-files '*.rb'); do ruby -c "$f" >/dev/null; done
+          while IFS= read -r -d '' f; do ruby -c -- "$f" >/dev/null; done < <(git ls-files -z '*.rb')
           echo "all ruby files parse"
       - name: YAML files must load
         run: |
           set -e
-          for f in $(git ls-files 'config/*.yml' 'config/**/*.yml'); do
-            ruby -ryaml -e "YAML.unsafe_load_file('$f')" >/dev/null
-          done
+          while IFS= read -r -d '' f; do
+            ruby -ryaml -e \
+              'YAML.safe_load_file(ARGV.fetch(0), permitted_classes: [], permitted_symbols: [], aliases: false)' \
+              -- "$f" >/dev/null
+          done < <(git ls-files -z 'config/*.yml' 'config/**/*.yml')
           echo "all yaml files load"
       - name: JS files must parse (if any)
         run: |
-          for f in $(git ls-files '*.js' | grep -v vendor | head -50); do
-            node --check "$f" || exit 1
-          done
+          set -e
+          count=0
+          while IFS= read -r -d '' f; do
+            case "$f" in *vendor*) continue ;; esac
+            node --check -- "$f"
+            count=$((count + 1))
+            [ "$count" -ge 50 ] && break
+          done < <(git ls-files -z '*.js')
           echo "js ok"

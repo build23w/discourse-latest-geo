@@ -16,7 +16,6 @@ plugins:
     client: true
   rr_geo_ipinfo_token:
     default: ""
-    client: true
 
   rr_set_profile_location_if_blank:
     default: true

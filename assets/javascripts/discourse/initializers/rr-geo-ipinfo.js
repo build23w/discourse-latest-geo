@@ -11,7 +11,7 @@ const GEO_TTL_MS = 6 * 60 * 60 * 1000; // 6h
 const GEO_POLL_INTERVAL_MS = 0; // set >0 to enable periodic checks
 const GEO_RELOAD_MIN_INTERVAL_MS = 60 * 1000; // 60s
 
-const IPINFO_URL = "https://ipinfo.io/json";
+const IPINFO_URL = "/rr-geo/ipinfo.json";
 // v0.15: the platform's own geolocation. On a Cloudflare-powered forum the
 // edge answers this from request.cf (the fronting Worker replies without even
 // waking Rails; a plain CF-proxied install serves it from the plugin reading
@@ -26,7 +26,6 @@ const COUNTRY_NAMES = {
   CA: "Canada", US: "United States", GB: "United Kingdom", AU: "Australia",
   NZ: "New Zealand", IE: "Ireland", IN: "India", FR: "France", DE: "Germany",
 };
-let IPINFO_TOKEN = ""; // set from site settings at init (free tokens lift the anon limit)
 let GEO_SOURCE = "auto"; // rr_geo_source: auto | cloudflare | ipinfo
 
 function nowMs() {
@@ -115,8 +114,9 @@ function fetchSessionIp(api) {
 }
 
 async function fetchIpinfo() {
-  const url = IPINFO_TOKEN ? `${IPINFO_URL}?token=${encodeURIComponent(IPINFO_TOKEN)}` : IPINFO_URL;
-  const res = await fetch(url, {
+  // Account tokens are intentionally server-only. The same-origin endpoint
+  // applies a per-IP limit and returns only the location fields we consume.
+  const res = await fetch(IPINFO_URL, {
     headers: { Accept: "application/json" },
   });
   if (!res.ok) {
@@ -279,7 +279,6 @@ export default {
       if (!ss?.rr_geo_enabled) {
         return;
       }
-      IPINFO_TOKEN = (ss.rr_geo_ipinfo_token || "").trim();
       GEO_SOURCE = (ss.rr_geo_source || "auto").toLowerCase().trim();
       await refreshGeoIfNeeded(api);
 
