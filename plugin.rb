@@ -99,6 +99,8 @@ after_initialize do
   require "request_store"
   require "ipaddr"
   require "digest"
+  require "net/http"
+  require "uri"
 
   # Expose the (cached, topics.excerpt column) first-post excerpt on every
   # topic-list item — core only includes it for pinned topics. Powers the
@@ -115,6 +117,7 @@ after_initialize do
     put '/rr-geo/interests.json'   => 'rr_geo/locations#update_interests'
     get '/rr-geo/prior.json'       => 'rr_geo/locations#prior'
     get '/rr-geo/detect.json'      => 'rr_geo/locations#detect'
+    get '/rr-geo/ipinfo.json'      => 'rr_geo/locations#ipinfo'
   end
 
   module ::RrGeo

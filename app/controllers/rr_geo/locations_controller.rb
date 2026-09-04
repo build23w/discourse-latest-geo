@@ -92,6 +92,48 @@ module RrGeo
       end
     end
 
+    # GET /rr-geo/ipinfo.json
+    # Server-side compatibility fallback for installations whose edge provides
+    # no city/region data. The account token never reaches the browser.
+    def ipinfo
+      raise Discourse::NotFound unless SiteSetting.rr_geo_enabled
+
+      response.headers['Cache-Control'] = 'private, no-store'
+      token = SiteSetting.rr_geo_ipinfo_token.to_s.strip
+      address = IPAddr.new(::RrGeo::Util.real_ip(request).to_s).to_s
+      limiter_key = Digest::SHA256.hexdigest(address)[0, 20]
+      RateLimiter.new(nil, "rr_geo_ipinfo_#{limiter_key}", 20, 1.hour).performed!
+
+      uri = URI::HTTPS.build(
+        host: 'ipinfo.io',
+        path: "/#{address}/json"
+      )
+      req = Net::HTTP::Get.new(uri.request_uri, 'Accept' => 'application/json')
+      req['Authorization'] = "Bearer #{token}" if token.present?
+      upstream = Net::HTTP.start(
+        uri.host,
+        uri.port,
+        use_ssl: true,
+        open_timeout: 3,
+        read_timeout: 5
+      ) { |http| http.request(req) }
+      raise Discourse::NotFound unless upstream.is_a?(Net::HTTPSuccess)
+
+      payload = JSON.parse(upstream.body)
+      render json: {
+        ip: ::RrGeo::Util.mask_ip(address),
+        city: payload['city'].to_s.presence,
+        region: payload['region'].to_s.presence,
+        country: payload['country'].to_s.presence,
+      }
+    rescue IPAddr::InvalidAddressError, JSON::ParserError, Timeout::Error, IOError,
+           Net::HTTPBadResponse, Net::ProtocolError, SocketError, SystemCallError,
+           OpenSSL::SSL::SSLError
+      render json: { ok: false }, status: 502
+    rescue RateLimiter::LimitExceeded
+      render json: { ok: false }, status: 429
+    end
+
     # GET /rr-geo/prior.json?tokens=orangeville,ontario
     # v0.10 cold-start prior: top tags among recent geo-matching topics.
     # Anon-safe (no per-user state, cached 1h per token set) — used to seed
@@ -115,16 +157,25 @@ module RrGeo
 
       key = "rr_geo_prior_v1_#{Digest::MD5.hexdigest(toks.sort.join(','))[0, 12]}"
       tags = ::Discourse.cache.fetch(key, expires_in: 1.hour) do
-        conn = ActiveRecord::Base.connection
+        anonymous_guardian = ::Guardian.new(nil)
         pats = ::RrGeo::Util.quote_patterns(toks.map { |t| "%#{ActiveRecord::Base.sanitize_sql_like(t)}%" })
-        conn.select_values(
-          "SELECT tg.name FROM topic_tags tt JOIN tags tg ON tg.id = tt.tag_id " \
-          "WHERE tt.topic_id IN (" \
-          "SELECT id FROM topics WHERE deleted_at IS NULL AND visible " \
-          "AND bumped_at > (now() - INTERVAL '90 days') " \
-          "AND title ILIKE ANY (ARRAY[#{pats}]) LIMIT 300" \
-          ") GROUP BY tg.name ORDER BY COUNT(*) DESC LIMIT 12"
-        )
+        public_topic_ids =
+          ::TopicQuery
+            .new(nil, guardian: anonymous_guardian)
+            .latest_results(limit: false, skip_ordering: true)
+            .where("topics.bumped_at > ?", 90.days.ago)
+            .where("topics.title ILIKE ANY (ARRAY[#{pats}])")
+            .limit(300)
+            .select(:id)
+
+        ::DiscourseTagging
+          .visible_tags(anonymous_guardian)
+          .joins(:topic_tags)
+          .where(topic_tags: { topic_id: public_topic_ids })
+          .group("tags.id")
+          .order(Arel.sql("COUNT(*) DESC"))
+          .limit(12)
+          .pluck(:name)
       end
 
       render json: { ok: true, tags: tags }
